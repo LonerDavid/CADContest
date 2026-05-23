@@ -1,41 +1,71 @@
-# cadcontest
+# cadcontest — ICCAD 2026 Problem A
 
-C++ and Python code for CAD contest solutions and tooling.
+LLM-Assisted Netlist Exploration and Transformation system.
 
-## Repository layout
+## Phased architecture
 
-| Path | Description |
-|------|-------------|
-| `cpp/` | C++ sources, headers, and build files |
-| `python/` | Python scripts and packages |
+| Step | Module | Description |
+|------|--------|-------------|
+| **1** | `python/eda/parser.py`, `dag.py`, `writer.py` | Parse flat gate-level Verilog → `DesignDAG` (netlist + directed graph) → write Verilog |
+| **2** | `python/eda/api.py`, `verify.py`, `transform.py` | Analysis API (depth, fanout, paths) + validated transforms with equivalence rollback |
+| **3** | `python/config.py`, `python/agent/tool_spec.py`, `llm.py` | `-config` YAML, LLM client, system prompt describing all EDA tools |
+| **4** | `python/main.py`, `response.py` | Stdin loop, `#RESPONSE <id>` / `#END <id>`, stdout + `output/<case>.log` |
 
-Adjust these directories as the project grows.
-
-## Requirements
-
-- **C++**: A C++17 (or newer) compiler and CMake 3.16+ (if using CMake)
-- **Python**: Python 3.10+
-
-## Building (C++)
-
-```bash
-mkdir -p build && cd build
-cmake ..
-cmake --build .
+```
+stdin (NL requests)
+    → RequestHandler (rules + LLM)
+        → EDASession
+            → EDAEngine
+                → DesignDAG / CircuitGraph
+                → DesignVerifier (equivalence, fanout, depth)
+    → ResponseWriter → stdout + output/testNN/testNN.log
 ```
 
-If you use a plain Makefile instead of CMake, run `make` from the appropriate directory.
-
-## Python setup
+## Setup
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+cp config.example.yaml config.yaml   # add API key (gitignored)
+chmod +x cada0001_alpha
 ```
 
-Create `requirements.txt` when you add dependencies.
+## Output layout
 
-## License
+```
+output/
+  test01/
+    test01.log          # agent responses (same as stdout tags)
+    test01_out.v        # final netlist from write request
+  test02/
+    ...
+```
 
-Add a license file when you are ready to publish or share this repository.
+Override directory: `CADCONTEST_OUTPUT_DIR=/path/to/out ./cada0001_alpha ...`
+
+## Run
+
+```bash
+./cada0001_alpha -config config.yaml < testcase/test01/prompt.txt
+```
+
+Batch run all 40 testcases:
+
+```bash
+./scripts/run_all_tests.sh config.yaml
+```
+
+## Correctness guarantees (Step 2)
+
+Every mutating API in `EDAEngine` snapshots the netlist, applies the change, then runs `DesignVerifier`:
+
+- **Functional equivalence** vs. pre-transform state (required by default)
+- **Structural constraints** when specified (`max_fanout`, `max_depth`)
+
+Failed verification **rolls back** the netlist and returns an error — avoiding zero-score functional violations.
+
+## Documentation
+
+- `docs/A_20260212.pdf` — contest specification
+- `docs/Problem A_QA_0417.pdf` — Q&A
+- `testcase/test01` … `test40` — sample benchmarks

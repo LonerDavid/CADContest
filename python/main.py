@@ -1,7 +1,7 @@
 """
 Step 4: Main I/O loop — stdin requests, agent + EDA execution, strict response tags.
 
-Usage: ./cada0001_alpha -config <config.yaml>
+Usage: ./cada1089_alpha -config <config.yaml>
 """
 
 from __future__ import annotations

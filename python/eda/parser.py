@@ -9,8 +9,8 @@ from typing import List, Optional, Tuple
 from .netlist import Gate, GateKind, Netlist, Port, Signal
 
 MODULE_RE = re.compile(r"module\s+(\w+)\s*\((.*?)\)\s*;", re.DOTALL)
-PORT_SCALAR_RE = re.compile(r"^\s*(input|output|inout)\s+(\w+)\s*;")
-PORT_BUS_RE = re.compile(r"^\s*(input|output|inout)\s*\[(\d+):(\d+)\]\s*(\w+)\s*;")
+PORT_SCALAR_RE = re.compile(r"^\s*(input|output|inout)\s+([\w,\s]+)\s*;")
+PORT_BUS_RE = re.compile(r"^\s*(input|output|inout)\s*\[(\d+):(\d+)\]\s+([\w,\s]+)\s*;")
 WIRE_SCALAR_RE = re.compile(r"^\s*wire\s+([\w,\s]+)\s*;")
 WIRE_BUS_RE = re.compile(r"^\s*wire\s*\[(\d+):(\d+)\]\s+([\w,\s]+)\s*;")
 GATE_POS_RE = re.compile(
@@ -84,7 +84,7 @@ def parse_verilog(path: str | Path) -> Netlist:
                             nl.wires.add(name)
             i += 1
             continue
-
+        '''
         pm = PORT_BUS_RE.match(stripped)
         if pm:
             direction, msb, lsb, name = pm.group(1), int(pm.group(2)), int(pm.group(3)), pm.group(4)
@@ -98,6 +98,28 @@ def parse_verilog(path: str | Path) -> Netlist:
             direction, name = pm.group(1), pm.group(2)
             declared_ports[name] = Port(name, direction, 0, 0)
             nl.wires.add(name)
+            i += 1
+            continue
+        '''
+        pm = PORT_BUS_RE.match(stripped)
+        if pm:
+            direction, msb, lsb, names = pm.group(1), int(pm.group(2)), int(pm.group(3)), pm.group(4)
+            for name in names.split(","):
+                name = name.strip()
+                if name:
+                    declared_ports[name] = Port(name, direction, msb, lsb)
+                    nl.wires.add(name)
+                    nl.wire_widths[name] = (msb, lsb)
+            i += 1
+            continue
+        pm = PORT_SCALAR_RE.match(stripped)
+        if pm:
+            direction, names = pm.group(1), pm.group(2)
+            for name in names.split(","):
+                name = name.strip()
+                if name:
+                    declared_ports[name] = Port(name, direction, 0, 0)
+                    nl.wires.add(name)
             i += 1
             continue
 

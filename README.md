@@ -27,7 +27,7 @@ stdin (NL requests)
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp config.example.yaml config.yaml   # add API key (gitignored)
-chmod +x cada0001_alpha
+chmod +x cada1089_alpha
 ```
 
 ## Output layout
@@ -41,12 +41,12 @@ output/
     ...
 ```
 
-Override directory: `CADCONTEST_OUTPUT_DIR=/path/to/out ./cada0001_alpha ...`
+Override directory: `CADCONTEST_OUTPUT_DIR=/path/to/out ./cada1089_alpha ...`
 
 ## Run
 
 ```bash
-./cada0001_alpha -config config.yaml < testcase/test01/prompt.txt
+./cada1089_alpha -config config.yaml < testcase/test01/prompt.txt
 ```
 
 Batch run all 40 testcases:

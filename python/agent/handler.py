@@ -119,12 +119,15 @@ class RequestHandler:
             if sigs:
                 return ("fanout_report", {"signal": sigs[0]})
 
-        if "gates driven by" in low and "g0" in req:
-            return ("gates_driven_by", {"signal": "g0", "gate_name": "g0"})
+        #if "gates driven by" in low and "g0" in req:
+        #    return ("gates_driven_by", {"signal": "g0"})
+
+        if "gates connected to the output of" in low or "gates driven by" in low:
+            sigs = _extract_signals(req)
+            if sigs:
+                return ("gates_driven_by", {"signal": sigs[0]})
 
         if "number of gates driven by" in low:
-            if "g0" in req:
-                return ("gates_driven_by", {"signal": "g0", "gate_name": "g0"})
             sigs = _extract_signals(req)
             if sigs:
                 return ("gates_driven_by", {"signal": sigs[0]})
@@ -148,13 +151,8 @@ class RequestHandler:
             sigs = _extract_signals(req)
             if len(sigs) >= 2:
                 return ("functional_equivalence", {"a": sigs[0], "b": sigs[1]})
-
-        if (
-            "insert buffers" in low
-            or re.search(r"drives?\s+more\s+than", low)
-            or "maximum fanout" in low
-            or "fanout optimization" in low
-        ):
+        '''
+        if "insert buffers" in low and "fanout" in low or "no gate drives more than" in low or "maximum fanout" in low:
             mf = 4
             mm = re.search(r"more than\s+(\d+)", low)
             if mm:
@@ -163,7 +161,20 @@ class RequestHandler:
             if mm:
                 mf = int(mm.group(1))
             return ("insert_fanout_buffers", {"max_fanout": mf})
-
+        '''
+        if "insert buffers" in low or "fanout" in low or "more than" in low:
+            mf = 4
+            mm = re.search(r"more than\s+(\d+)", low)
+            if mm:
+                mf = int(mm.group(1))
+            else:
+                mm = re.search(r"maximum fanout\s+(\d+)", low)
+                if mm:
+                    mf = int(mm.group(1))
+            
+            if "buffer" in low or "fanout" in low or "drives" in low:
+                return ("insert_fanout_buffers", {"max_fanout": mf})
+            
         if "reduce the critical path depth" in low or "reduce critical path depth" in low:
             return ("reduce_depth", {})
 
@@ -217,9 +228,14 @@ class RequestHandler:
         if "structural duplicate" in low:
             return ("merge_structural_duplicates", {})
 
-        if "verify functional equivalence" in low or "prove that the transformed" in low:
-            return ("verify_equivalence", {})
-
+        #if "verify functional equivalence" in low or "prove that the transformed" in low:
+        #    return ("verify_equivalence", {})
+        
+        if "functional equivalence" in low or "functionally equivalent" in low or "identical logic values" in low:
+            sigs = _extract_signals(req)
+            if len(sigs) >= 2:
+                return ("functional_equivalence", {"a": sigs[0], "b": sigs[1]})
+            
         if "how many not gates" in low:
             return ("count_not_gates", {})
 
@@ -249,9 +265,7 @@ class RequestHandler:
         if "register-to-register paths" in low:
             return ("reg_to_reg_paths", {})
 
-        if "enable or hold" in low or (
-            "flip-flop" in low and ("enable" in low or "hold" in low)
-        ):
+        if "enable or hold" in low:
             return ("dff_enable_hold", {})
 
         if "flip-flops driven by clock" in low:
@@ -359,8 +373,13 @@ class RequestHandler:
             if sigs:
                 return ("nand_equiv_pair", {"signal": sigs[-1]})
 
-        if "maximum-depth path" in low and "g0" in req:
-            return ("gate_on_max_depth_path", {"gate": "g0"})
+        #if "maximum-depth path" in low and "g0" in req:
+        #    return ("gate_on_max_depth_path", {"gate": "g0"})
+
+        if "maximum-depth path" in low:
+            sigs = _extract_signals(req)
+            if sigs:
+                return ("gate_on_max_depth_path", {"gate": sigs[0]})
 
         if "every path from" in low and "pass through gate" in low:
             sigs = _extract_signals(req)
@@ -380,13 +399,18 @@ class RequestHandler:
             if len(sigs) >= 2:
                 return ("articulation_points", {"src": sigs[0], "dst": sigs[1]})
 
+        #if "reconnect input pin" in low:
+        #    sigs = _extract_signals(req)
+        #    if len(sigs) >= 2:
+        #        return ("reconnect_input", {"gate": "g0", "pin": 0, "signal": sigs[-1]})
+
         if "reconnect input pin" in low:
             sigs = _extract_signals(req)
             if len(sigs) >= 2:
-                return ("reconnect_input", {"gate": "g0", "pin": 0, "signal": sigs[-1]})
+                return ("reconnect_input", {"gate": sigs[0], "pin": 0, "signal": sigs[-1]})
 
         if "gates connected to the output of g0" in low:
-            return ("gates_driven_by", {"signal": "g0", "gate_name": "g0"})
+            return ("gates_driven_by", {"signal": "g0"})
 
         if "depth of the cone" in low:
             sigs = _extract_signals(req)

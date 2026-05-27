@@ -3,7 +3,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 CONFIG="${1:-config.yaml}"
-BIN="./cada0001_alpha"
+BIN="./cada1089_alpha"
 OUT_DIR="${ROOT}/output"
 mkdir -p "$OUT_DIR"
 
@@ -56,8 +56,7 @@ for i in $(seq -w 1 40); do
   elapsed=$((end - start))
 
   agent_log="${case_dir}/${t}.log"
-  # stdout.log is authoritative for this batch run (agent log may accumulate across runs)
-  resp_count=$(grep -c '^#RESPONSE ' "$outlog" 2>/dev/null || grep -c '^#RESPONSE ' "$agent_log" 2>/dev/null || echo 0)
+  resp_count=$(grep -c '^#RESPONSE ' "$agent_log" 2>/dev/null || grep -c '^#RESPONSE ' "$outlog" 2>/dev/null || echo 0)
   prompt_lines=$(grep -c '.' "$prompt" || echo 0)
   has_err=0
   if grep -qE 'Error executing|Error:|Transform rejected|Traceback|LLM processing failed|Could not interpret' "$outlog" "$agent_log" 2>/dev/null; then
@@ -95,5 +94,3 @@ echo "Outputs: ${OUT_DIR}/<testNN>/"
 echo "  - <testNN>.log     (agent responses)"
 echo "  - <testNN>_out.v   (written netlists)"
 echo "  - stdout.log       (batch run capture)"
-chmod +x "${ROOT}/scripts/summarize_results.sh" 2>/dev/null || true
-"${ROOT}/scripts/summarize_results.sh" 2>/dev/null || true

@@ -20,10 +20,15 @@ def dispatch_extra(engine: EDAEngine, tool: str, args: Dict[str, Any]) -> str | 
 
     if tool == "gates_driven_by":
         sig = args["signal"]
+        gate_label = args.get("gate_name", sig)
         if sig in engine.design.netlist.gates:
             sig = engine.design.netlist.gates[sig].output.key()
         gates = g.gates_driven_by(sig)
-        return f"Gates driven by {sig}: {', '.join(gates) if gates else 'none'}."
+        n = len(gates)
+        return (
+            f"{n} gate(s) driven by {gate_label}"
+            + (f": {', '.join(gates)}." if gates else ".")
+        )
 
     if tool == "immediate_successors":
         s = g.immediate_successors(args["gate"])

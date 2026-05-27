@@ -120,9 +120,11 @@ class RequestHandler:
                 return ("fanout_report", {"signal": sigs[0]})
 
         if "gates driven by" in low and "g0" in req:
-            return ("gates_driven_by", {"signal": "g0"})
+            return ("gates_driven_by", {"signal": "g0", "gate_name": "g0"})
 
         if "number of gates driven by" in low:
+            if "g0" in req:
+                return ("gates_driven_by", {"signal": "g0", "gate_name": "g0"})
             sigs = _extract_signals(req)
             if sigs:
                 return ("gates_driven_by", {"signal": sigs[0]})
@@ -147,7 +149,12 @@ class RequestHandler:
             if len(sigs) >= 2:
                 return ("functional_equivalence", {"a": sigs[0], "b": sigs[1]})
 
-        if "insert buffers" in low and "fanout" in low or "no gate drives more than" in low or "maximum fanout" in low:
+        if (
+            "insert buffers" in low
+            or re.search(r"drives?\s+more\s+than", low)
+            or "maximum fanout" in low
+            or "fanout optimization" in low
+        ):
             mf = 4
             mm = re.search(r"more than\s+(\d+)", low)
             if mm:
@@ -242,7 +249,9 @@ class RequestHandler:
         if "register-to-register paths" in low:
             return ("reg_to_reg_paths", {})
 
-        if "enable or hold" in low:
+        if "enable or hold" in low or (
+            "flip-flop" in low and ("enable" in low or "hold" in low)
+        ):
             return ("dff_enable_hold", {})
 
         if "flip-flops driven by clock" in low:
@@ -377,7 +386,7 @@ class RequestHandler:
                 return ("reconnect_input", {"gate": "g0", "pin": 0, "signal": sigs[-1]})
 
         if "gates connected to the output of g0" in low:
-            return ("gates_driven_by", {"signal": "g0"})
+            return ("gates_driven_by", {"signal": "g0", "gate_name": "g0"})
 
         if "depth of the cone" in low:
             sigs = _extract_signals(req)

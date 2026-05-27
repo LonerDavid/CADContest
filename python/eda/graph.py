@@ -168,28 +168,33 @@ class CircuitGraph:
         return 1
 
     def max_combinational_depth(self, src: str, dst: str) -> int:
-        """Longest path through gates from src to dst."""
-        best = -1
+        """Longest path through gates from src to dst (memoized DFS on DAG)."""
+        memo: Dict[str, int] = {}
+        visiting: Set[str] = set()
 
-        def dfs(cur: str, depth: int, visited: Set[str]) -> None:
-            nonlocal best
+        def longest(cur: str) -> int:
             if cur == dst:
-                best = max(best, depth)
-                return
-            if cur in visited:
-                return
-            visited.add(cur)
+                return 0
+            if cur in memo:
+                return memo[cur]
+            if cur in visiting:
+                return -1
+            visiting.add(cur)
+            best = -1
             for gate_name, _ in self.loads.get(cur, []):
                 g = self.gate(gate_name)
                 if g.kind == GateKind.DFF:
                     if g.output.key() == dst:
-                        best = max(best, depth)
+                        best = max(best, 0)
                     continue
-                dfs(g.output.key(), depth + 1, set(visited))
-            visited.remove(cur)
+                sub = longest(g.output.key())
+                if sub >= 0:
+                    best = max(best, 1 + sub)
+            visiting.remove(cur)
+            memo[cur] = best
+            return best
 
-        dfs(src, 0, set())
-        return best
+        return longest(src)
 
     def all_combinational_paths(
         self,

@@ -101,7 +101,12 @@ lib/
 core
 vgcore.*
 
-# Archives
+# Local config & generated outputs
+config.yaml
+output/
+!output/.gitkeep
+run_logs/
+
 *.7z
 *.dmg
 *.gz

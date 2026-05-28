@@ -151,7 +151,7 @@ class RequestHandler:
             sigs = _extract_signals(req)
             if len(sigs) >= 2:
                 return ("functional_equivalence", {"a": sigs[0], "b": sigs[1]})
-        '''
+
         if "insert buffers" in low and "fanout" in low or "no gate drives more than" in low or "maximum fanout" in low:
             mf = 4
             mm = re.search(r"more than\s+(\d+)", low)
@@ -161,24 +161,14 @@ class RequestHandler:
             if mm:
                 mf = int(mm.group(1))
             return ("insert_fanout_buffers", {"max_fanout": mf})
-        '''
-        if "insert buffers" in low or "fanout" in low or "more than" in low:
-            mf = 4
-            mm = re.search(r"more than\s+(\d+)", low)
-            if mm:
-                mf = int(mm.group(1))
-            else:
-                mm = re.search(r"maximum fanout\s+(\d+)", low)
-                if mm:
-                    mf = int(mm.group(1))
-            
-            if "buffer" in low or "fanout" in low or "drives" in low:
-                return ("insert_fanout_buffers", {"max_fanout": mf})
-            
+
+        if "optimize the logic depth" in low or "minimize the maximum logic depth" in low:
+            return ("reduce_depth", {})
+
         if "reduce the critical path depth" in low or "reduce critical path depth" in low:
             return ("reduce_depth", {})
 
-        if "dangling" in low or "unused" in low or "floating" in low and "remove" in low or "trim unused" in low or "prune" in low or "sweep out" in low or "eliminate unused" in low:
+        if "dangling" in low or "unused" in low or "floating" in low and "remove" in low or "trim unused" in low or "prune" in low or "sweep out" in low or "eliminate unused" in low or "delete all gates that do not contribute" in low:
             return ("remove_dangling", {})
 
         if "rename" in low and "gate" in low:
@@ -460,5 +450,38 @@ class RequestHandler:
 
         if "check whether the current netlist is functionally equivalent" in low:
             return ("verify_equivalence", {})
+
+        if "prove that the transformed design is equivalent" in low or "prove functional equivalence" in low:
+            return ("verify_equivalence", {})
+
+        if "verify functional equivalence" in low or "verify that the" in low and "functionally equivalent" in low:
+            return ("verify_equivalence", {})
+
+        if "restructure" in low and "target depth" in low:
+            sigs = _extract_signals(req)
+            md = 4
+            mm = re.search(r"depth\s+(?:of\s+)?(\d+)", low)
+            if mm:
+                md = int(mm.group(1))
+            if sigs:
+                return ("optimize_cone_depth", {"signal": sigs[0], "max_depth": md})
+
+        if "derive the boolean equation" in low or "boolean expression for" in low or "logic equation" in low:
+            sigs = _extract_signals(req)
+            if sigs:
+                # Fallback: report on signal equivalence and dependencies
+                return ("fanin_cone", {"signal": sigs[0]})
+
+        if "connect to the renamed signal" in low and "gates" in low:
+            sigs = _extract_signals(req)
+            if sigs:
+                return ("gates_driven_by", {"signal": sigs[-1]})
+
+        if "how many outputs have" in low and "depth greater than" in low:
+            td = 4
+            mm = re.search(r"greater than\s+(\d+)", low)
+            if mm:
+                td = int(mm.group(1))
+            return ("outputs_depth_gt", {"threshold": td})
 
         return None

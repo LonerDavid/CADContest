@@ -29,17 +29,7 @@ class TransformEngine:
                 if g.output.key() == old:
                     g.output = Signal.parse(new)
                 g.inputs = [Signal.parse(new) if i.key() == old else i for i in g.inputs]
-    '''
-    def rename_gate(self, old: str, new: str) -> None:
-        if old not in self.nl.gates:
-            raise ValueError(f"Gate {old} not found")
-        g = self.nl.gates.pop(old)
-        g.name = new
-        self.nl.gates[new] = g
-        idx = self.nl.gate_order.index(old)
-        self.nl.gate_order[idx] = new
-        self.refresh()
-    '''
+    
     def rename_gate(self, old: str, new: str) -> None:
         if old not in self.nl.gates:
             return
@@ -56,6 +46,7 @@ class TransformEngine:
         self.refresh()
 
     def remove_dangling(self) -> int:
+        self.refresh()
         needed: Set[str] = set(self.nl.po_signals()) | self.graph.dff_d_signals
         q = deque(needed)
         keep_gates: Set[str] = set()
@@ -68,11 +59,13 @@ class TransformEngine:
             drv = self.graph.driver.get(sig)
             if not drv or drv == "PI" or str(drv).startswith("DFF:"):
                 continue
+            if drv not in self.nl.gates:
+                continue
             keep_gates.add(drv)
             g = self.nl.gates[drv]
             if g.kind == GateKind.DFF:
-                d = g.dff_ports.get("D", g.inputs[0]).key()
-                if d not in keep_sigs:
+                d = g.dff_ports.get("D", g.inputs[0]).key() if g.inputs else ""
+                if d and d not in keep_sigs:
                     q.append(d)
             else:
                 for inp in g.inputs:
@@ -81,7 +74,7 @@ class TransformEngine:
                         q.append(ik)
         removed = 0
         for gname in list(self.nl.gate_order):
-            if gname not in keep_gates:
+            if gname not in keep_gates and gname in self.nl.gates:
                 self.nl.remove_gate(gname)
                 removed += 1
         self.refresh()
@@ -89,6 +82,7 @@ class TransformEngine:
 
     def _reassign_loads(self, loads: List[Tuple[str, str]], old_sig: str, new_sig: str) -> None:
         for gate_name, role in loads:
+            if gate_name not in self.nl.gates: continue
             g = self.nl.gates[gate_name]
             if g.kind == GateKind.DFF:
                 for pname, ps in g.dff_ports.items():
@@ -98,114 +92,30 @@ class TransformEngine:
                 g.inputs = [
                     Signal.parse(new_sig) if i.key() == old_sig else i for i in g.inputs
                 ]
-    '''
-    def _build_buffer_tree(self, src: str, loads: List[Tuple[str, str]], max_fanout: int) -> int:
-        """Split excess loads off src onto buffer branches (one tree level)."""
-        n = len(loads)
-        if n <= max_fanout:
-            return 0
-
-        k = (n + max_fanout - 1) // max_fanout  # minimum number of drivers needed
-        if k <= 1:
-            return 0
-
-        # Reserve one fanout slot per child buffer on src.
-        group0_size = max(max_fanout - (k - 1), 1)
-        remaining = loads[group0_size:]
-        added = 0
-
-        while remaining:
-            chunk = remaining[:max_fanout]
-            remaining = remaining[max_fanout:]
-            buf_out = self.nl.next_wire_name()
-            gname = self.nl.next_gate_name()
-            self.nl.add_gate(
-                Gate(
-                    name=gname,
-                    kind=GateKind.BUF,
-                    output=Signal.parse(buf_out),
-                    inputs=[Signal.parse(src)],
-                )
-            )
-            self._reassign_loads(chunk, src, buf_out)
-            added += 1
-
-        self.refresh()
-        src_loads = list(self.graph.loads.get(src, []))
-        if len(src_loads) <= max_fanout:
-            return added
-
-        # If child buffers overload src, cluster buffer inputs under meta-buffers.
-        buf_loads = [
-            (gn, role)
-            for gn, role in src_loads
-            if self.nl.gates[gn].kind == GateKind.BUF
-        ]
-        direct_loads = [
-            (gn, role) for gn, role in src_loads if self.nl.gates[gn].kind != GateKind.BUF
-        ]
-        reserve = max(max_fanout - len(direct_loads), 1)
-        if len(buf_loads) > reserve:
-            meta_segments = [buf_loads[i : i + reserve] for i in range(0, len(buf_loads), reserve)]
-            for seg in meta_segments[1:]:
-                meta_out = self.nl.next_wire_name()
-                gname = self.nl.next_gate_name()
-                self.nl.add_gate(
-                    Gate(
-                        name=gname,
-                        kind=GateKind.BUF,
-                        output=Signal.parse(meta_out),
-                        inputs=[Signal.parse(src)],
-                    )
-                )
-                for gn, _ in seg:
-                    self.nl.gates[gn].inputs = [Signal.parse(meta_out)]
-                added += 1
-        return added
-
-    def insert_fanout_buffers(self, max_fanout: int = 4) -> int:
-        added = 0
-        while True:
-            self.refresh()
-            worst_sig = None
-            worst_n = 0
-            for sig, loads in self.graph.loads.items():
-                if is_constant(sig):
-                    continue
-                if len(loads) > worst_n:
-                    worst_n = len(loads)
-                    worst_sig = sig
-            if worst_sig is None or worst_n <= max_fanout:
-                break
-            added += self._build_buffer_tree(
-                worst_sig, list(self.graph.loads[worst_sig]), max_fanout
-            )
-        self.refresh()
-        return added
-    '''
+    
     def insert_fanout_buffers(self, max_fanout: int = 4) -> int:
         added = 0
         current_loads = {}
+        violators = set()
+        
+        # 1. 初始掃描，把違規者加入 Set 中
         for sig, loads in self.graph.loads.items():
             if not is_constant(sig):
                 current_loads[sig] = list(loads)
-                
-        while True:
-            violator_sig = None
-            violator_loads = None
-            for sig, loads in current_loads.items():
                 if len(loads) > max_fanout:
-                    violator_sig = sig
-                    violator_loads = loads
-                    break
-                    
-            if not violator_sig:
-                break
-                
+                    violators.add(sig)
+
+        # 2. 針對違規者進行極速抽換，不用每次掃描整個字典
+        while violators:
+            violator_sig = violators.pop()
+            violator_loads = current_loads.get(violator_sig, [])
+            
             n = len(violator_loads)
+            if n <= max_fanout:
+                continue
+                
             k = (n + max_fanout - 1) // max_fanout
             if k <= 1:
-                current_loads[violator_sig] = violator_loads[:max_fanout]
                 continue
                 
             group0_size = max(max_fanout - (k - 1), 1)
@@ -245,6 +155,9 @@ class TransformEngine:
                     added += 1
                     
                 current_loads[violator_sig] = final_sig_loads
+                # 如果加上 meta-buffer 後還是超標，再加回待處理區
+                if len(final_sig_loads) > max_fanout:
+                    violators.add(violator_sig)
             else:
                 current_loads[violator_sig] = new_sig_loads
 
@@ -272,32 +185,6 @@ class TransformEngine:
         self.refresh()
         return added
     
-    '''
-    def collapse_back_to_back_inverters(self) -> int:
-        removed = 0
-        self.refresh()
-        gbo = self.nl.gate_by_output()
-        for g in list(self.nl.gates.values()):
-            if g.kind != GateKind.NOT:
-                continue
-            if g.name not in self.nl.gates:  
-                continue
-            out = g.output.key()
-            for succ_gate, _ in self.graph.loads.get(out, []):
-                if succ_gate not in self.nl.gates:
-                    continue
-                sg = self.nl.gates[succ_gate]
-                if sg.kind == GateKind.NOT:
-                    # g -> sg : collapse to wire
-                    in_sig = g.inputs[0].key()
-                    self._replace_signal(sg.output.key(), in_sig)
-                    self.nl.remove_gate(g.name)
-                    self.nl.remove_gate(sg.name)
-                    removed += 2
-                    break
-        self.refresh()
-        return removed
-    '''
     def collapse_back_to_back_inverters(self) -> int:
         removed = 0
         self.refresh()
@@ -409,83 +296,7 @@ class TransformEngine:
                 removed += 1
         self.refresh()
         return removed
-    '''
-    def _map_gate_to_and_not(self, g: Gate, cache: Dict[str, str]) -> str:
-        out = g.output.key()
-        if out in cache:
-            return cache[out]
-        if g.kind == GateKind.DFF:
-            cache[out] = out
-            return out
-        if g.kind == GateKind.AND:
-            a = self._signal_to_and_not(g.inputs[0].key(), cache)
-            b = self._signal_to_and_not(g.inputs[1].key(), cache)
-            w = self.nl.next_wire_name()
-            gname = self.nl.next_gate_name()
-            self.nl.add_gate(Gate(gname, GateKind.AND, Signal.parse(w), [Signal.parse(a), Signal.parse(b)]))
-            cache[out] = w
-            return w
-        if g.kind == GateKind.NOT:
-            a = self._signal_to_and_not(g.inputs[0].key(), cache)
-            w = self.nl.next_wire_name()
-            gname = self.nl.next_gate_name()
-            self.nl.add_gate(Gate(gname, GateKind.NOT, Signal.parse(w), [Signal.parse(a)]))
-            cache[out] = w
-            return w
-        # De Morgan and standard mappings using AND/NOT
-        a = self._signal_to_and_not(g.inputs[0].key(), cache)
-        b = self._signal_to_and_not(g.inputs[1].key(), cache)
-        w = self.nl.next_wire_name()
-        if g.kind == GateKind.OR:
-            # OR(a,b) = NOT(AND(NOT a, NOT b))
-            na, nb, tmp, tmp2 = (self.nl.next_wire_name() for _ in range(4))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NOT, Signal.parse(na), [Signal.parse(a)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NOT, Signal.parse(nb), [Signal.parse(b)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.AND, Signal.parse(tmp), [Signal.parse(na), Signal.parse(nb)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NOT, Signal.parse(w), [Signal.parse(tmp)]))
-        elif g.kind == GateKind.NAND:
-            tmp = self.nl.next_wire_name()
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.AND, Signal.parse(tmp), [Signal.parse(a), Signal.parse(b)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NOT, Signal.parse(w), [Signal.parse(tmp)]))
-        elif g.kind == GateKind.NOR:
-            tmp = self.nl.next_wire_name()
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.OR, Signal.parse(tmp), [Signal.parse(a), Signal.parse(b)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NOT, Signal.parse(w), [Signal.parse(tmp)]))
-            # OR needs further decomposition - use direct NOT(AND(NOT a, NOT b)) instead
-            self.nl.remove_gate(self.nl.gate_order[-2])
-            na, nb, tmp = (self.nl.next_wire_name() for _ in range(3))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NOT, Signal.parse(na), [Signal.parse(a)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NOT, Signal.parse(nb), [Signal.parse(b)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.AND, Signal.parse(tmp), [Signal.parse(na), Signal.parse(nb)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NOT, Signal.parse(w), [Signal.parse(tmp)]))
-        elif g.kind == GateKind.XOR:
-            # XOR = OR(AND(a, NOT b), AND(NOT a, b))
-            na, nb, t1, t2, t3 = (self.nl.next_wire_name() for _ in range(5))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NOT, Signal.parse(na), [Signal.parse(a)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NOT, Signal.parse(nb), [Signal.parse(b)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.AND, Signal.parse(t1), [Signal.parse(a), Signal.parse(nb)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.AND, Signal.parse(t2), [Signal.parse(na), Signal.parse(b)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.OR, Signal.parse(t3), [Signal.parse(t1), Signal.parse(t2)]))
-            # convert OR at t3
-            na2, nb2, tmp = (self.nl.next_wire_name() for _ in range(3))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NOT, Signal.parse(na2), [Signal.parse(t1)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NOT, Signal.parse(nb2), [Signal.parse(t2)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.AND, Signal.parse(tmp), [Signal.parse(na2), Signal.parse(nb2)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NOT, Signal.parse(w), [Signal.parse(tmp)]))
-        elif g.kind == GateKind.XNOR:
-            tmp = self.nl.next_wire_name()
-            xor_g = Gate("_tmp", GateKind.XOR, Signal.parse(tmp), [Signal.parse(a), Signal.parse(b)])
-            self._map_gate_to_and_not(xor_g, cache)
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NOT, Signal.parse(w), [Signal.parse(tmp)]))
-        elif g.kind == GateKind.BUF:
-            cache[out] = a
-            return a
-        else:
-            cache[out] = out
-            return out
-        cache[out] = w
-        return w
-    '''
+    
     def _map_gate_to_and_not(self, g: Gate, cache: Dict[str, str]) -> str:
         out = g.output.key()
         if out in cache: return cache[out]
@@ -555,6 +366,7 @@ class TransformEngine:
         drv = self.graph.driver.get(sig)
         if not drv or drv == "PI" or str(drv).startswith("DFF:"):
             return sig
+        if drv not in self.nl.gates: return sig
         g = self.nl.gates[drv]
         return self._map_gate_to_and_not(g, cache)
 
@@ -573,58 +385,6 @@ class TransformEngine:
                 self.nl.remove_gate(g.name)
         self.refresh()
         return self.nl.count_by_type()["AND"] + self.nl.count_by_type()["NOT"]
-
-    '''
-    def _map_to_nand_not(self, g: Gate, cache: Dict[str, str]) -> str:
-        out = g.output.key()
-        if out in cache:
-            return cache[out]
-        if g.kind in (GateKind.DFF,):
-            cache[out] = out
-            return out
-        if is_constant(out):
-            return out
-        a = self._sig_nand(g.inputs[0].key(), cache) if g.inputs else ""
-        if g.kind == GateKind.NOT:
-            w = self.nl.next_wire_name()
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NAND, Signal.parse(w), [Signal.parse(a), Signal.parse(a)]))
-            cache[out] = w
-            return w
-        if g.kind == GateKind.BUF:
-            cache[out] = a
-            return a
-        b = self._sig_nand(g.inputs[1].key(), cache)
-        w = self.nl.next_wire_name()
-        if g.kind == GateKind.AND:
-            tmp = self.nl.next_wire_name()
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NAND, Signal.parse(tmp), [Signal.parse(a), Signal.parse(b)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NAND, Signal.parse(w), [Signal.parse(tmp), Signal.parse(tmp)]))
-        elif g.kind == GateKind.OR:
-            na, nb = self.nl.next_wire_name(), self.nl.next_wire_name()
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NAND, Signal.parse(na), [Signal.parse(a), Signal.parse(a)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NAND, Signal.parse(nb), [Signal.parse(b), Signal.parse(b)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NAND, Signal.parse(w), [Signal.parse(na), Signal.parse(nb)]))
-        elif g.kind == GateKind.NAND:
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NAND, Signal.parse(w), [Signal.parse(a), Signal.parse(b)]))
-        elif g.kind == GateKind.NOR:
-            tmp = self.nl.next_wire_name()
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NAND, Signal.parse(tmp), [Signal.parse(a), Signal.parse(b)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NAND, Signal.parse(w), [Signal.parse(tmp), Signal.parse(tmp)]))
-        elif g.kind == GateKind.XOR:
-            # 4 NAND implementation
-            n1, n2, n3, n4 = (self.nl.next_wire_name() for _ in range(4))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NAND, Signal.parse(n1), [Signal.parse(a), Signal.parse(b)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NAND, Signal.parse(n2), [Signal.parse(a), Signal.parse(n1)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NAND, Signal.parse(n3), [Signal.parse(b), Signal.parse(n1)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NAND, Signal.parse(w), [Signal.parse(n2), Signal.parse(n3)]))
-        elif g.kind == GateKind.XNOR:
-            tmp = self.nl.next_wire_name()
-            xor_g = Gate("_t", GateKind.XOR, Signal.parse(tmp), [Signal.parse(a), Signal.parse(b)])
-            self._map_to_nand_not(xor_g, cache)
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NAND, Signal.parse(w), [Signal.parse(tmp), Signal.parse(tmp)]))
-        cache[out] = w
-        return w
-    '''
 
     def _map_to_nand_not(self, g: Gate, cache: Dict[str, str]) -> str:
         out = g.output.key()
@@ -678,6 +438,7 @@ class TransformEngine:
         drv = self.graph.driver.get(sig)
         if not drv or drv == "PI" or str(drv).startswith("DFF:"):
             return sig
+        if drv not in self.nl.gates: return sig
         return self._map_to_nand_not(self.nl.gates[drv], cache)
 
     def remap_to_nand_not(self) -> int:
@@ -697,12 +458,10 @@ class TransformEngine:
     def replace_xnor_with_nor(self) -> int:
         added_nor = 0
         for g in list(self.nl.gates.values()):
-            if g.kind != GateKind.XNOR:
+            if g.kind != GateKind.XNOR or len(g.inputs) < 2:
                 continue
             a, b = g.inputs[0], g.inputs[1]
             out = g.output.key()
-            # XNOR = NOR(NOR(a,a), NOR(b,b)) with intermediate - use NOR-only: XNOR = NOT(XOR)
-            # XOR = (a OR b) AND NOT(a AND b) - complex; use 5 NOR gates standard
             n1, n2, n3, n4, w = (self.nl.next_wire_name() for _ in range(5))
             self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NOR, Signal.parse(n1), [a, b]))
             self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NOR, Signal.parse(n2), [a, Signal.parse(n1)]))
@@ -718,7 +477,7 @@ class TransformEngine:
     def replace_xor_with_nand(self) -> int:
         added = 0
         for g in list(self.nl.gates.values()):
-            if g.kind != GateKind.XOR:
+            if g.kind != GateKind.XOR or len(g.inputs) < 2:  # <--- 防呆
                 continue
             a, b = g.inputs[0], g.inputs[1]
             out = g.output.key()

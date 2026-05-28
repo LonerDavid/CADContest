@@ -1,41 +1,44 @@
-# cadcontest
+# cadcontest — ICCAD 2026 Problem A
 
-C++ and Python code for CAD contest solutions and tooling.
+LLM-Assisted Netlist Exploration and Transformation system.
 
-## Repository layout
-
-| Path | Description |
-|------|-------------|
-| `cpp/` | C++ sources, headers, and build files |
-| `python/` | Python scripts and packages |
-
-Adjust these directories as the project grows.
-
-## Requirements
-
-- **C++**: A C++17 (or newer) compiler and CMake 3.16+ (if using CMake)
-- **Python**: Python 3.10+
-
-## Building (C++)
+## Setup
 
 ```bash
-mkdir -p build && cd build
-cmake ..
-cmake --build .
-```
-
-If you use a plain Makefile instead of CMake, run `make` from the appropriate directory.
-
-## Python setup
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+cp config.example.yaml config.yaml   # add API key (gitignored)
+chmod +x cada1089_alpha
 ```
 
-Create `requirements.txt` when you add dependencies.
+ABC (Berkeley Logic Synthesis) is auto-installed on first run if not present.
 
-## License
+## Run
 
-Add a license file when you are ready to publish or share this repository.
+```bash
+# Single test
+./cada1089_alpha -config config.yaml < testcase/test01/prompt.txt
+
+# All 40 tests
+./scripts/run_all_tests.sh
+```
+
+## Architecture
+
+```
+stdin → RequestHandler (rules + LLM)
+           → EDASession → EDAEngine
+                → CircuitGraph / C++ eda_core (hot paths)
+                → DesignVerifier (equivalence, rollback on failure)
+        → ResponseWriter → stdout + output/testNN/testNN.log
+```
+
+Every transform snapshots the netlist, applies the change, then verifies functional equivalence — rolling back on failure.
+
+## Output
+
+```
+output/testNN/
+  testNN.log       # agent responses
+  testNN_out.v     # written netlist
+```

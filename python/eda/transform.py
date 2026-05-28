@@ -98,14 +98,12 @@ class TransformEngine:
         current_loads = {}
         violators = set()
         
-        # 1. 初始掃描，把違規者加入 Set 中
         for sig, loads in self.graph.loads.items():
             if not is_constant(sig):
                 current_loads[sig] = list(loads)
                 if len(loads) > max_fanout:
                     violators.add(sig)
 
-        # 2. 針對違規者進行極速抽換，不用每次掃描整個字典
         while violators:
             violator_sig = violators.pop()
             violator_loads = current_loads.get(violator_sig, [])
@@ -155,7 +153,6 @@ class TransformEngine:
                     added += 1
                     
                 current_loads[violator_sig] = final_sig_loads
-                # 如果加上 meta-buffer 後還是超標，再加回待處理區
                 if len(final_sig_loads) > max_fanout:
                     violators.add(violator_sig)
             else:

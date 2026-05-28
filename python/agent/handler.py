@@ -45,11 +45,9 @@ class RequestHandler:
                 return self.llm.plan_and_execute(req, self.session)
             except Exception as e:
                 return f"LLM processing failed: {e}. Request: {req[:200]}"
-
-        return (
-            f"Could not interpret request: {req}\n"
-            "Please rephrase using supported load, write, analysis, or transformation commands."
-        )
+            
+        return f"Request not supported by current rule set: {req}\nPlease rephrase using supported commands."
+        
 
     def _rule_match(self, req: str) -> Optional[Tuple[str, Dict[str, Any]]]:
         low = req.lower()
@@ -425,12 +423,13 @@ class RequestHandler:
         if "perform depth optimization" in low or "minimize maximum path depth" in low:
             return ("reduce_depth", {})
 
-        if "fanout optimization" in low:
+        if "insert buffers" in low or "fanout" in low or "drives more than" in low:
             mf = 4
-            mm = re.search(r"maximum fanout\s+(\d+)", low)
+            mm = re.search(r"(?:maximum fanout|more than)\s+(\d+)", low)
             if mm:
                 mf = int(mm.group(1))
-            return ("insert_fanout_buffers", {"max_fanout": mf})
+            if "buffer" in low or "fanout" in low or "drives" in low:
+                return ("insert_fanout_buffers", {"max_fanout": mf})
 
         if "convert the logic cone" in low and "nor and not" in low:
             sigs = _extract_signals(req)

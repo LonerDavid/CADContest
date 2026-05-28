@@ -2,25 +2,6 @@
 
 LLM-Assisted Netlist Exploration and Transformation system.
 
-## Phased architecture
-
-| Step | Module | Description |
-|------|--------|-------------|
-| **1** | `python/eda/parser.py`, `dag.py`, `writer.py` | Parse flat gate-level Verilog → `DesignDAG` (netlist + directed graph) → write Verilog |
-| **2** | `python/eda/api.py`, `verify.py`, `transform.py` | Analysis API (depth, fanout, paths) + validated transforms with equivalence rollback |
-| **3** | `python/config.py`, `python/agent/tool_spec.py`, `llm.py` | `-config` YAML, LLM client, system prompt describing all EDA tools |
-| **4** | `python/main.py`, `response.py` | Stdin loop, `#RESPONSE <id>` / `#END <id>`, stdout + `output/<case>.log` |
-
-```
-stdin (NL requests)
-    → RequestHandler (rules + LLM)
-        → EDASession
-            → EDAEngine
-                → DesignDAG / CircuitGraph
-                → DesignVerifier (equivalence, fanout, depth)
-    → ResponseWriter → stdout + output/testNN/testNN.log
-```
-
 ## Setup
 
 ```bash
@@ -30,42 +11,34 @@ cp config.example.yaml config.yaml   # add API key (gitignored)
 chmod +x cada1089_alpha
 ```
 
-## Output layout
-
-```
-output/
-  test01/
-    test01.log          # agent responses (same as stdout tags)
-    test01_out.v        # final netlist from write request
-  test02/
-    ...
-```
-
-Override directory: `CADCONTEST_OUTPUT_DIR=/path/to/out ./cada1089_alpha ...`
+ABC (Berkeley Logic Synthesis) is auto-installed on first run if not present.
 
 ## Run
 
 ```bash
+# Single test
 ./cada1089_alpha -config config.yaml < testcase/test01/prompt.txt
+
+# All 40 tests
+./scripts/run_all_tests.sh
 ```
 
-Batch run all 40 testcases:
+## Architecture
 
-```bash
-./scripts/run_all_tests.sh config.yaml
+```
+stdin → RequestHandler (rules + LLM)
+           → EDASession → EDAEngine
+                → CircuitGraph / C++ eda_core (hot paths)
+                → DesignVerifier (equivalence, rollback on failure)
+        → ResponseWriter → stdout + output/testNN/testNN.log
 ```
 
-## Correctness guarantees (Step 2)
+Every transform snapshots the netlist, applies the change, then verifies functional equivalence — rolling back on failure.
 
-Every mutating API in `EDAEngine` snapshots the netlist, applies the change, then runs `DesignVerifier`:
+## Output
 
-- **Functional equivalence** vs. pre-transform state (required by default)
-- **Structural constraints** when specified (`max_fanout`, `max_depth`)
-
-Failed verification **rolls back** the netlist and returns an error — avoiding zero-score functional violations.
-
-## Documentation
-
-- `docs/A_20260212.pdf` — contest specification
-- `docs/Problem A_QA_0417.pdf` — Q&A
-- `testcase/test01` … `test40` — sample benchmarks
+```
+output/testNN/
+  testNN.log       # agent responses
+  testNN_out.v     # written netlist
+```

@@ -46,6 +46,7 @@ class EDAEngine:
         self.design: Optional[DesignDAG] = None
         self.baseline: Optional[DesignDAG] = None  # netlist at last load
         self._transform: Optional[TransformEngine] = None
+        self._last_elim: Dict[str, int] = {}
 
     @property
     def loaded(self) -> bool:
@@ -173,7 +174,7 @@ class EDAEngine:
         def run():
             return self._sync_transform().remove_dangling()
 
-        return self._apply_validated(run, metric_fn=lambda: 0)
+        return self._apply_validated(run)
 
     def rename_gate(self, old: str, new: str) -> TransformReport:
         def run():
@@ -423,7 +424,8 @@ class EDAEngine:
 
     def _fmt_remove_dangling(self, _: Dict) -> str:
         r = self.remove_dangling()
-        return f"Removed dangling logic. Verified: {r.verification}"
+        self._last_elim["dangling"] = r.metric
+        return f"Removed {r.metric} dangling gate(s). Verified: {r.verification}"
 
     def _fmt_rename_gate(self, a: Dict) -> str:
         self.rename_gate(a["old"], a["new"])

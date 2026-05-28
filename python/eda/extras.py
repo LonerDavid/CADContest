@@ -8,6 +8,27 @@ from .api import EDAEngine, TransformError
 from .netlist import GateKind
 
 
+def _build_bool_expr(nl: Any, g: Any, sig: str, depth: int, max_depth: int, visited: set) -> str:
+    if depth > max_depth or sig in visited:
+        return sig
+    visited = visited | {sig}
+    drv = g.driver.get(sig)
+    if not drv or drv == "PI" or str(drv).startswith("DFF:"):
+        return sig
+    gate = nl.gates.get(drv)
+    if not gate:
+        return sig
+    kind = gate.kind.value.upper()
+    if not gate.inputs:
+        return sig
+    sub = [_build_bool_expr(nl, g, i.key(), depth + 1, max_depth, visited) for i in gate.inputs]
+    if kind == "NOT":
+        return f"NOT({sub[0]})"
+    if kind == "BUF":
+        return sub[0]
+    return f"{kind}({', '.join(sub)})"
+
+
 def dispatch_extra(engine: EDAEngine, tool: str, args: Dict[str, Any]) -> str | None:
     """Return formatted result, or None if tool is not handled here."""
     g = engine.design.graph if engine.design else None
@@ -117,22 +138,26 @@ def dispatch_extra(engine: EDAEngine, tool: str, args: Dict[str, Any]) -> str | 
     if tool == "propagate_and_const0":
         n = engine._sync_transform().propagate_and_const0()
         engine.design.refresh()
+        engine._last_elim["and_const0"] = n
         return f"Eliminated {n} AND gate(s) with const-0."
 
     if tool == "propagate_or_const1":
         n = engine._sync_transform().propagate_or_const1()
         engine.design.refresh()
+        engine._last_elim["or_const1"] = n
         return f"Eliminated {n} OR gate(s) with const-1."
 
     if tool == "propagate_nand_constants":
         n = engine._sync_transform().propagate_nand_constants()
         engine.design.refresh()
-        return f"Eliminated {n} NAND gate(s)."
+        engine._last_elim["nand"] = n
+        return f"Eliminated {n} NAND gate(s) with constant inputs."
 
     if tool == "propagate_nor_constants":
         n = engine._sync_transform().propagate_nor_constants()
         engine.design.refresh()
-        return f"Eliminated {n} NOR gate(s)."
+        engine._last_elim["nor"] = n
+        return f"Eliminated {n} NOR gate(s) with constant inputs."
 
     if tool == "replace_nand_const1":
         try:
@@ -235,5 +260,37 @@ def dispatch_extra(engine: EDAEngine, tool: str, args: Dict[str, Any]) -> str | 
         if not found:
             return "No constant-driven gates."
         return "\n".join(f"  {a} ({b}): {c}" for a, b, c in found)
+
+    if tool == "gates_with_const1_inputs":
+        from .graph import CONST1
+        found = [(gobj.name, gobj.kind.value) for gobj in engine.design.netlist.gates.values()
+                 if gobj.kind.value not in ("DFF",) and any(i.key() == CONST1 for i in gobj.inputs)]
+        if not found:
+            return "No gates with inputs tied to 1'b1."
+        lines = [f"Gates with 1'b1 input: {len(found)}"]
+        for gname, gkind in found[:50]:
+            lines.append(f"  {gname} ({gkind})")
+        if len(found) > 50:
+            lines.append(f"  ... and {len(found)-50} more")
+        return "\n".join(lines)
+
+    if tool == "last_elim_count":
+        key = args.get("type", "")
+        count = engine._last_elim.get(key, 0)
+        labels = {
+            "and_const0": "AND gates eliminated by constant-0 propagation",
+            "or_const1": "OR gates eliminated by constant-1 propagation",
+            "nand": "NAND gates eliminated by constant propagation",
+            "nor": "NOR gates eliminated by constant propagation",
+            "dangling": "dangling gates removed",
+        }
+        label = labels.get(key, f"{key} eliminated")
+        return f"{count} {label}."
+
+    if tool == "boolean_expression":
+        sig = args["signal"]
+        nl = engine.design.netlist
+        expr = _build_bool_expr(nl, g, sig, 0, 12, set())
+        return f"Boolean expression for {sig}: {expr}"
 
     return None

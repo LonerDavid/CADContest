@@ -18,8 +18,16 @@ WRITE_RE = re.compile(
 )
 
 
+_NAMED_SIG_RE = re.compile(r"\b(?:signal|wire)\s+(\w+)", re.I)
+
+
 def _extract_signals(text: str) -> List[str]:
-    return re.findall(r"n\d+(?:\[\d+\])?|g\d+", text)
+    results = re.findall(r"n\d+(?:\[\d+\])?|g\d+", text)
+    if not results:
+        m = _NAMED_SIG_RE.search(text)
+        if m:
+            results = [m.group(1)]
+    return results
 
 
 class RequestHandler:
@@ -79,7 +87,7 @@ class RequestHandler:
         if "count all the gates" in low or "gate count" in low or "total gate count" in low:
             return ("count_gates", {})
 
-        if "fanin cone" in low and "how many gates" in low:
+        if ("fanin cone" in low or "logic cone" in low) and ("how many gates" in low or "gates are in" in low or "gates in the" in low):
             sigs = _extract_signals(req)
             if sigs:
                 return ("fanin_cone_gate_count", {"signal": sigs[-1]})
@@ -104,12 +112,13 @@ class RequestHandler:
             if len(sigs) >= 3:
                 return ("path_exists_avoiding", {"src": sigs[0], "dst": sigs[1], "avoid": sigs[2]})
 
-        if "avoiding" in low and "path" in low:
+        if ("avoiding" in low or "avoids" in low) and "path" in low:
             sigs = _extract_signals(req)
             if len(sigs) >= 3:
                 return ("path_exists_avoiding", {"src": sigs[0], "dst": sigs[1], "avoid": sigs[2]})
 
-        if "list every path" in low or "complete enumeration of paths" in low:
+        if ("list every path" in low or "complete enumeration of paths" in low
+                or "find all combinational paths" in low):
             sigs = _extract_signals(req)
             if len(sigs) >= 2:
                 return ("list_paths", {"src": sigs[0], "dst": sigs[1]})
@@ -122,7 +131,9 @@ class RequestHandler:
         #if "gates driven by" in low and "g0" in req:
         #    return ("gates_driven_by", {"signal": "g0"})
 
-        if "gates connected to the output of" in low or "gates driven by" in low:
+        if ("gates connected to the output of" in low or "gate connected to the output of" in low
+                or "gates driven by" in low or "currently driven by" in low
+                or "driven by signal" in low):
             sigs = _extract_signals(req)
             if sigs:
                 return ("gates_driven_by", {"signal": sigs[0]})
@@ -175,10 +186,15 @@ class RequestHandler:
             if "buffer" in low or "fanout" in low or "drives" in low:
                 return ("insert_fanout_buffers", {"max_fanout": mf})
             
-        if "reduce the critical path depth" in low or "reduce critical path depth" in low:
+        if ("reduce the critical path depth" in low or "reduce critical path depth" in low
+                or ("optimize" in low and "logic depth" in low)):
             return ("reduce_depth", {})
 
-        if "dangling" in low or "unused" in low or "floating" in low and "remove" in low or "trim unused" in low or "prune" in low or "sweep out" in low or "eliminate unused" in low:
+        if ("dangling" in low or "trim unused" in low or "prune" in low
+                or "sweep out" in low or "eliminate unused" in low
+                or "do not contribute" in low or "not contribute to" in low
+                or ("unused" in low and "remove" in low)
+                or ("floating" in low and "remove" in low)):
             return ("remove_dangling", {})
 
         if "rename" in low and "gate" in low:
@@ -208,6 +224,15 @@ class RequestHandler:
         if "xor" in low and "nand" in low:
             return ("replace_xor_nand", {})
 
+        if "restructure" in low and "target depth" in low:
+            sigs = _extract_signals(req)
+            md = 4
+            mm = re.search(r"target depth of\s+(\d+)", low)
+            if mm:
+                md = int(mm.group(1))
+            if sigs:
+                return ("optimize_cone_depth", {"signal": sigs[0], "max_depth": md})
+
         if "optimize" in low and "levels deep" in low or "depth 4" in low or "at most 4" in low:
             sigs = _extract_signals(req)
             if sigs:
@@ -228,14 +253,16 @@ class RequestHandler:
         if "structural duplicate" in low:
             return ("merge_structural_duplicates", {})
 
-        #if "verify functional equivalence" in low or "prove that the transformed" in low:
-        #    return ("verify_equivalence", {})
-        
+        if "verify functional equivalence" in low or "prove that the transformed" in low:
+            return ("verify_equivalence", {})
+
         if "functional equivalence" in low or "functionally equivalent" in low or "identical logic values" in low:
             sigs = _extract_signals(req)
             if len(sigs) >= 2:
                 return ("functional_equivalence", {"a": sigs[0], "b": sigs[1]})
-            
+            if "merge" not in low:
+                return ("verify_equivalence", {})
+
         if "how many not gates" in low:
             return ("count_not_gates", {})
 
@@ -278,7 +305,7 @@ class RequestHandler:
             if len(sigs) >= 2:
                 return ("path_exists", {"src": sigs[0], "dst": sigs[1]})
 
-        if "path of length 0" in low:
+        if "path of length 0" in low or "paths of length 0" in low:
             return ("zero_length_paths", {})
 
         if "dedicated buffer" in low and "each load" in low:
@@ -286,14 +313,36 @@ class RequestHandler:
             if sigs:
                 return ("insert_dedicated_buffers", {"signal": sigs[0]})
 
-        if "how many buf gates were added" in low:
+        if "how many buf gates were added" in low or ("how many buf gates" in low and "added" in low):
             return ("count_gate_type", {"type": "buf"})
 
-        if "how many nor gates" in low and "added" in low:
+        if "how many" in low and "eliminated" in low:
+            if "nand" in low:
+                return ("last_elim_count", {"type": "nand"})
+            if "nor" in low:
+                return ("last_elim_count", {"type": "nor"})
+            if "or" in low:
+                return ("last_elim_count", {"type": "or_const1"})
+            if "and" in low:
+                return ("last_elim_count", {"type": "and_const0"})
+
+        if "how many" in low and "dangling" in low and "removed" in low:
+            return ("last_elim_count", {"type": "dangling"})
+
+        if "how many nor gates" in low:
             return ("count_gate_type", {"type": "nor"})
 
         if "how many nand gates" in low:
             return ("count_gate_type", {"type": "nand"})
+
+        if "how many and gates" in low:
+            return ("count_gate_type", {"type": "and"})
+
+        if "how many or gates" in low:
+            return ("count_gate_type", {"type": "or"})
+
+        if "how many xor gates" in low:
+            return ("count_gate_type", {"type": "xor"})
 
         if "depth greater than 4" in low:
             return ("outputs_depth_gt", {"threshold": 4})
@@ -308,6 +357,16 @@ class RequestHandler:
             sigs = _extract_signals(req)
             if sigs:
                 return ("max_fanout_signal", {"signal": sigs[0]})
+
+        if "simplify" in low and "propagat" in low and "constant" in low:
+            if "nand" in low:
+                return ("propagate_nand_constants", {})
+            if "nor" in low:
+                return ("propagate_nor_constants", {})
+            if "or" in low:
+                return ("propagate_or_const1", {})
+            if "and" in low:
+                return ("propagate_and_const0", {})
 
         if "constant 0" in low and "and gate" in low:
             if "how many" in low:
@@ -355,7 +414,10 @@ class RequestHandler:
             if sigs:
                 return ("is_cut", {"signal": sigs[0]})
 
-        if "floating inputs" in low:
+        if "floating inputs" in low or "floating signals" in low or "unconnected output ports" in low:
+            return ("floating_signals", {})
+
+        if "how many floating" in low:
             return ("floating_signals", {})
 
         if "always 0 regardless" in low:
@@ -427,7 +489,13 @@ class RequestHandler:
             if sigs:
                 return ("fanin_cone", {"signal": sigs[-1]})
 
-        if "depends on input" in low:
+        if ("boolean equation" in low or "logic expression" in low
+                or ("boolean function" in low and "compute" in low)):
+            sigs = _extract_signals(req)
+            if sigs:
+                return ("boolean_expression", {"signal": sigs[-1]})
+
+        if "depends on input" in low or "depend on input" in low:
             sigs = _extract_signals(req)
             if len(sigs) >= 2:
                 return ("depends_on", {"output": sigs[0], "input": sigs[1]})
@@ -452,13 +520,16 @@ class RequestHandler:
             if sigs:
                 return ("remap_cone_nand_not", {"signal": sigs[0]})
 
-        if "gates with constant inputs" in low or "constant inputs" in low and "report any" in low:
+        if "gates with constant inputs" in low or ("constant inputs" in low and "report any" in low):
             return ("gates_with_constants", {})
 
-        if "confirm that the design is still functionally equivalent" in low:
-            return ("verify_equivalence", {})
+        if "inputs tied to 1'b1" in low or "tied to 1'b1" in low or "tied to constant 1" in low:
+            return ("gates_with_const1_inputs", {})
 
-        if "check whether the current netlist is functionally equivalent" in low:
+        if ("confirm that the design is still functionally equivalent" in low
+                or "check whether the current netlist is functionally equivalent" in low
+                or ("equivalent" in low and "original" in low and ("netlist" in low or "loaded" in low))
+                or ("equivalent" in low and "pre-transformation" in low)):
             return ("verify_equivalence", {})
 
         return None

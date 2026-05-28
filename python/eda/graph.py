@@ -8,6 +8,19 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from .netlist import Gate, GateKind, Netlist, Signal  # noqa: F401
 
+try:
+    import eda_core as _eda_core  # C++ hot-loop extension
+    _HAS_CPP = True
+except ImportError:
+    _eda_core = None  # type: ignore[assignment]
+    _HAS_CPP = False
+
+# GateKind → int (must match C++ K_* constants)
+_KIND_INT: Dict[GateKind, int] = {
+    GateKind.AND: 0, GateKind.OR: 1, GateKind.NOT: 2, GateKind.NAND: 3,
+    GateKind.NOR: 4, GateKind.XOR: 5, GateKind.XNOR: 6, GateKind.BUF: 7,
+    GateKind.DFF: 8,
+}
 
 CONST0 = "1'b0"
 CONST1 = "1'b1"
@@ -54,6 +67,58 @@ class CircuitGraph:
 
     def _add_load(self, sig: str, gate: str, role: str) -> None:
         self.loads.setdefault(sig, []).append((gate, role))
+
+    # ── C++ circuit serialization ──────────────────────────────────────────
+    def invalidate_cpp_cache(self) -> None:
+        """Call after structural modifications to the netlist."""
+        self.__dict__.pop("_cpp_cache", None)
+
+    def _to_cpp_circuit(self):
+        """Serialize this CircuitGraph into a C++ eda_core.Circuit object (cached)."""
+        if not _HAS_CPP:
+            return None
+        cached = self.__dict__.get("_cpp_cache")
+        if cached is not None:
+            return cached
+        # Assign integer IDs to all signals
+        all_sigs: List[str] = []
+        sig_id: Dict[str, int] = {}
+        for s in self.driver:
+            if s not in sig_id:
+                sig_id[s] = len(all_sigs)
+                all_sigs.append(s)
+        for s in self.loads:
+            if s not in sig_id:
+                sig_id[s] = len(all_sigs)
+                all_sigs.append(s)
+
+        n = len(all_sigs)
+        c0 = sig_id.get(CONST0, -1)
+        c1 = sig_id.get(CONST1, -1)
+
+        pi_ids = [sig_id[s] for s in self.nl.pi_signals() if s in sig_id]
+        pi_ids += [sig_id[s] for s in self.dff_q_signals if s in sig_id]
+        po_ids = [sig_id[s] for s in self.nl.po_signals() if s in sig_id]
+        po_ids += [sig_id[s] for s in self.dff_d_signals if s in sig_id]
+
+        # Build gate tuples in topological order (nl.gate_order is already topo)
+        gates_data = []
+        for gname in self.nl.gate_order:
+            g = self.nl.gates.get(gname)
+            if g is None:
+                continue
+            kind_int = _KIND_INT.get(g.kind, 0)
+            out_id = sig_id.get(g.output.key(), -1)
+            if g.kind == GateKind.DFF:
+                d_sig = g.dff_ports.get("D", g.inputs[0]).key()
+                in_ids = [sig_id.get(d_sig, -1)]
+            else:
+                in_ids = [sig_id.get(i.key(), -1) for i in g.inputs]
+            gates_data.append((kind_int, out_id, in_ids))
+
+        result = (_eda_core.Circuit(n, gates_data, pi_ids, po_ids, c0, c1), sig_id)
+        self.__dict__["_cpp_cache"] = result
+        return result
 
     def gate(self, name: str) -> Gate:
         return self.nl.gates[name]
@@ -169,6 +234,13 @@ class CircuitGraph:
 
     def max_combinational_depth(self, src: str, dst: str) -> int:
         """Longest path through gates from src to dst."""
+        if _HAS_CPP:
+            r = self._to_cpp_circuit()
+            if r is not None:
+                circ, sid = r
+                si, di = sid.get(src, -1), sid.get(dst, -1)
+                if si >= 0 and di >= 0:
+                    return circ.max_depth(si, di)
         best = -1
 
         def dfs(cur: str, depth: int, visited: Set[str]) -> None:
@@ -202,6 +274,20 @@ class CircuitGraph:
         Enumerate combinational paths (gate names).
         Returns (paths, truncated) where truncated=True if search hit limits.
         """
+        if _HAS_CPP:
+            r = self._to_cpp_circuit()
+            if r is not None:
+                circ, sid = r
+                si, di = sid.get(src, -1), sid.get(dst, -1)
+                if si >= 0 and di >= 0:
+                    idx_paths = circ.enumerate_paths(si, di, max_paths)
+                    # Convert gate indices back to gate names
+                    idx2name = {i: g for i, g in enumerate(self.nl.gate_order)
+                                if i < len(self.nl.gate_order)}
+                    named = [[idx2name[gi] for gi in p if gi in idx2name]
+                             for p in idx_paths]
+                    return named, len(named) >= max_paths
+
         paths: List[List[str]] = []
         steps = 0
         truncated = False
@@ -279,7 +365,13 @@ class CircuitGraph:
 
     def max_depth_in_cone(self, target: str) -> int:
         """Max logic depth from any PI to target."""
-        best = 0
+        if _HAS_CPP:
+            r = self._to_cpp_circuit()
+            if r is not None:
+                circ, sid = r
+                ti = sid.get(target, -1)
+                if ti >= 0:
+                    return circ.max_depth_in_cone(ti)
         pis = self.nl.pi_signals() | self.dff_q_signals
 
         def upstream_depth(sig: str, memo: Dict[str, int]) -> int:
@@ -364,11 +456,16 @@ class CircuitGraph:
         return sorted(result)
 
     def functionally_equivalent(self, a: str, b: str, max_inputs: int = 18) -> bool:
+        if _HAS_CPP:
+            r = self._to_cpp_circuit()
+            if r is not None:
+                circ, sid = r
+                ai, bi = sid.get(a, -1), sid.get(b, -1)
+                if ai >= 0 and bi >= 0:
+                    return circ.are_equivalent(ai, bi)
         pis = sorted(set(self.supporting_pis(a)) | set(self.supporting_pis(b)))
         if len(pis) > max_inputs:
-            # fallback: compare structural simulation on sample
             import random
-
             for _ in range(512):
                 vals = {pi: random.randint(0, 1) for pi in pis}
                 if self.evaluate_signal(a, vals) != self.evaluate_signal(b, vals):
@@ -397,6 +494,11 @@ class CircuitGraph:
         return [gn for gn, _ in self.loads.get(sig, [])]
 
     def max_design_depth(self) -> int:
+        if _HAS_CPP:
+            r = self._to_cpp_circuit()
+            if r is not None:
+                circ, _sid = r
+                return circ.max_design_depth()
         depths = []
         for po in self.nl.po_signals():
             depths.append(self.max_depth_in_cone(po))

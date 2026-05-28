@@ -98,6 +98,12 @@ class Netlist:
     raw_header_lines: List[str] = field(default_factory=list)
     raw_wire_lines: List[str] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        # 0 = "not yet initialized"; lazily computed on first call
+        object.__setattr__(self, "_wire_idx", 0)
+        object.__setattr__(self, "_gate_idx", 0)
+        object.__setattr__(self, "_removed_gates", set())
+
     def clone(self) -> "Netlist":
         import copy
 
@@ -133,29 +139,63 @@ class Netlist:
         return {g.output.key(): g for g in self.gates.values()}
 
     def next_gate_name(self, prefix: str = "g") -> str:
-        idx = len(self.gates)
+        idx = self.__dict__.get("_gate_idx", 0)
+        if idx == 0:
+            # First call: find max existing gate index to avoid re-scanning
+            for gname in self.gates:
+                if gname.startswith(prefix) and gname[len(prefix):].isdigit():
+                    idx = max(idx, int(gname[len(prefix):]) + 1)
         while f"{prefix}{idx}" in self.gates:
             idx += 1
+        object.__setattr__(self, "_gate_idx", idx + 1)
         return f"{prefix}{idx}"
 
     def next_wire_name(self, prefix: str = "n") -> str:
-        idx = 1
+        idx = self.__dict__.get("_wire_idx", 0)
+        if idx == 0:
+            # First call: find max existing wire index to avoid O(N^2) scanning
+            for w in self.wires:
+                if w.startswith(prefix) and w[len(prefix):].isdigit():
+                    idx = max(idx, int(w[len(prefix):]) + 1)
+            if idx == 0:
+                idx = 1
         while prefix + str(idx) in self.wires:
             idx += 1
         name = prefix + str(idx)
         self.wires.add(name)
+        object.__setattr__(self, "_wire_idx", idx + 1)
         return name
 
     def add_gate(self, gate: Gate) -> None:
         self.gates[gate.name] = gate
-        if gate.name not in self.gate_order:
+        removed = self.__dict__.get("_removed_gates", set())
+        if gate.name in removed:
+            removed.discard(gate.name)
+        # Use _gate_order_set (O(1)) instead of scanning the list (O(N))
+        gset = self.__dict__.get("_gate_order_set")
+        if gset is None:
+            gset = set(self.gate_order)
+            object.__setattr__(self, "_gate_order_set", gset)
+        if gate.name not in gset:
             self.gate_order.append(gate.name)
+            gset.add(gate.name)
 
     def remove_gate(self, name: str) -> None:
         if name in self.gates:
             del self.gates[name]
-        if name in self.gate_order:
-            self.gate_order.remove(name)
+        removed = self.__dict__.get("_removed_gates", set())
+        removed.add(name)
+        object.__setattr__(self, "_removed_gates", removed)
+        gset = self.__dict__.get("_gate_order_set")
+        if gset is not None:
+            gset.discard(name)
+
+    def _compact_gate_order(self) -> None:
+        """Rebuild gate_order, dropping removed entries. Call before iteration."""
+        removed = self.__dict__.get("_removed_gates", set())
+        if removed:
+            self.gate_order = [g for g in self.gate_order if g not in removed]
+            object.__setattr__(self, "_removed_gates", set())
 
     def count_by_type(self) -> Dict[str, int]:
         counts = {t.upper(): 0 for t in GATE_TYPES}

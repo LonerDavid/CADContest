@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from .graph import CircuitGraph, CONST0, CONST1, is_constant
 from .netlist import Gate, GateKind, Netlist, Signal
@@ -15,6 +15,7 @@ class TransformEngine:
         self.graph = CircuitGraph.from_netlist(nl)
 
     def refresh(self) -> None:
+        self.nl._compact_gate_order()
         self.graph = CircuitGraph.from_netlist(self.nl)
 
     def _replace_signal(self, old: str, new: str) -> None:
@@ -276,11 +277,19 @@ class TransformEngine:
     def collapse_back_to_back_inverters(self) -> int:
         removed = 0
         self.refresh()
-        gbo = self.nl.gate_by_output()
+        # Build signal → [(gate_name, input_idx_or_portname)] map once for O(fanout) rewiring
+        sig_loads_map: Dict[str, List] = {}
+        for gobj in self.nl.gates.values():
+            if gobj.kind == GateKind.DFF:
+                for pname, psig in gobj.dff_ports.items():
+                    sig_loads_map.setdefault(psig.key(), []).append((gobj.name, pname))
+            else:
+                for iidx, inp in enumerate(gobj.inputs):
+                    sig_loads_map.setdefault(inp.key(), []).append((gobj.name, iidx))
         for g in list(self.nl.gates.values()):
             if g.kind != GateKind.NOT:
                 continue
-            if g.name not in self.nl.gates:  
+            if g.name not in self.nl.gates:
                 continue
             out = g.output.key()
             for succ_gate, _ in self.graph.loads.get(out, []):
@@ -288,9 +297,26 @@ class TransformEngine:
                     continue
                 sg = self.nl.gates[succ_gate]
                 if sg.kind == GateKind.NOT:
-                    # g -> sg : collapse to wire
                     in_sig = g.inputs[0].key()
-                    self._replace_signal(sg.output.key(), in_sig)
+                    sg_out = sg.output.key()
+                    # Targeted O(fanout) rewire — no full-netlist scan
+                    for load_name, idx_or_port in sig_loads_map.get(sg_out, []):
+                        load_g = self.nl.gates.get(load_name)
+                        if load_g is None:
+                            continue
+                        if isinstance(idx_or_port, str):
+                            if load_g.dff_ports.get(idx_or_port, Signal.parse("")).key() == sg_out:
+                                load_g.dff_ports[idx_or_port] = Signal.parse(in_sig)
+                        else:
+                            load_g.inputs = [
+                                Signal.parse(in_sig) if (i == idx_or_port and inp.key() == sg_out) else inp
+                                for i, inp in enumerate(load_g.inputs)
+                            ]
+                    # Propagate map: former consumers of sg_out now consume in_sig
+                    old_consumers = sig_loads_map.pop(sg_out, [])
+                    if old_consumers:
+                        sig_loads_map.setdefault(in_sig, []).extend(old_consumers)
+                    sig_loads_map.pop(out, None)
                     self.nl.remove_gate(g.name)
                     self.nl.remove_gate(sg.name)
                     removed += 2
@@ -560,17 +586,42 @@ class TransformEngine:
 
     def remap_to_and_not(self) -> int:
         """Replace all combinational gates with AND/NOT equivalents."""
-        comb = [g for g in list(self.nl.gates.values()) if g.kind != GateKind.DFF and g.kind not in (GateKind.AND, GateKind.NOT)]
+        comb = [g for g in list(self.nl.gates.values())
+                if g.kind != GateKind.DFF and g.kind not in (GateKind.AND, GateKind.NOT)]
         cache: Dict[str, str] = {}
         for g in comb:
             self._map_gate_to_and_not(g, cache)
-        # Remove old combinational gates (non AND/NOT/DFF)
+
+        # Build signal→loads map ONCE for O(fanout) targeted rewiring
+        # (replaces O(N) _replace_signal per gate → was O(N²) overall)
+        sig_loads: Dict[str, List[Tuple[str, object]]] = {}
+        for gobj in self.nl.gates.values():
+            if gobj.kind == GateKind.DFF:
+                for pname, psig in gobj.dff_ports.items():
+                    sig_loads.setdefault(psig.key(), []).append((gobj.name, pname))
+            else:
+                for iidx, inp in enumerate(gobj.inputs):
+                    sig_loads.setdefault(inp.key(), []).append((gobj.name, iidx))
+
         for g in comb:
-            if g.name in self.nl.gates:
-                out_new = cache.get(g.output.key())
-                if out_new and out_new != g.output.key():
-                    self._replace_signal(g.output.key(), out_new)
-                self.nl.remove_gate(g.name)
+            if g.name not in self.nl.gates:
+                continue
+            old = g.output.key()
+            new = cache.get(old)
+            if new and new != old:
+                for load_name, idx_or_port in sig_loads.get(old, []):
+                    load_g = self.nl.gates.get(load_name)
+                    if load_g is None:
+                        continue
+                    if isinstance(idx_or_port, str):
+                        if load_g.dff_ports.get(idx_or_port, Signal.parse("")).key() == old:
+                            load_g.dff_ports[idx_or_port] = Signal.parse(new)
+                    else:
+                        load_g.inputs = [
+                            Signal.parse(new) if (i == idx_or_port and inp.key() == old) else inp
+                            for i, inp in enumerate(load_g.inputs)
+                        ]
+            self.nl.remove_gate(g.name)
         self.refresh()
         return self.nl.count_by_type()["AND"] + self.nl.count_by_type()["NOT"]
 
@@ -681,57 +732,115 @@ class TransformEngine:
         return self._map_to_nand_not(self.nl.gates[drv], cache)
 
     def remap_to_nand_not(self) -> int:
-        comb = [g for g in list(self.nl.gates.values()) if g.kind != GateKind.DFF and g.kind not in (GateKind.NAND, GateKind.NOT)]
+        comb = [g for g in list(self.nl.gates.values())
+                if g.kind != GateKind.DFF and g.kind not in (GateKind.NAND, GateKind.NOT)]
         cache: Dict[str, str] = {}
         for g in comb:
             self._map_to_nand_not(g, cache)
+
+        # Targeted rewiring (same pattern as remap_to_and_not)
+        sig_loads: Dict[str, List[Tuple[str, object]]] = {}
+        for gobj in self.nl.gates.values():
+            if gobj.kind == GateKind.DFF:
+                for pname, psig in gobj.dff_ports.items():
+                    sig_loads.setdefault(psig.key(), []).append((gobj.name, pname))
+            else:
+                for iidx, inp in enumerate(gobj.inputs):
+                    sig_loads.setdefault(inp.key(), []).append((gobj.name, iidx))
+
         for g in comb:
-            if g.name in self.nl.gates:
-                out_new = cache.get(g.output.key())
-                if out_new:
-                    self._replace_signal(g.output.key(), out_new)
-                self.nl.remove_gate(g.name)
+            if g.name not in self.nl.gates:
+                continue
+            old = g.output.key()
+            new = cache.get(old)
+            if new:
+                for load_name, idx_or_port in sig_loads.get(old, []):
+                    load_g = self.nl.gates.get(load_name)
+                    if load_g is None:
+                        continue
+                    if isinstance(idx_or_port, str):
+                        if load_g.dff_ports.get(idx_or_port, Signal.parse("")).key() == old:
+                            load_g.dff_ports[idx_or_port] = Signal.parse(new)
+                    else:
+                        load_g.inputs = [
+                            Signal.parse(new) if (i == idx_or_port and inp.key() == old) else inp
+                            for i, inp in enumerate(load_g.inputs)
+                        ]
+            self.nl.remove_gate(g.name)
         self.refresh()
         return self.nl.count_by_type()["NAND"]
 
-    def replace_xnor_with_nor(self) -> int:
-        added_nor = 0
-        for g in list(self.nl.gates.values()):
-            if g.kind != GateKind.XNOR:
-                continue
-            a, b = g.inputs[0], g.inputs[1]
-            out = g.output.key()
-            # XNOR = NOR(NOR(a,a), NOR(b,b)) with intermediate - use NOR-only: XNOR = NOT(XOR)
-            # XOR = (a OR b) AND NOT(a AND b) - complex; use 5 NOR gates standard
-            n1, n2, n3, n4, w = (self.nl.next_wire_name() for _ in range(5))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NOR, Signal.parse(n1), [a, b]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NOR, Signal.parse(n2), [a, Signal.parse(n1)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NOR, Signal.parse(n3), [b, Signal.parse(n1)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NOR, Signal.parse(n4), [Signal.parse(n2), Signal.parse(n3)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NOR, Signal.parse(w), [Signal.parse(n4), Signal.parse(n4)]))
-            self._replace_signal(out, w)
-            self.nl.remove_gate(g.name)
-            added_nor += 5
-        self.refresh()
-        return added_nor
+    def _bulk_replace_gates(
+        self,
+        kind: GateKind,
+        make_replacement: Callable[[Signal, Signal], Tuple[str, List[Gate]]],
+    ) -> int:
+        """Generic bulk gate replacement with O(1) amortized signal rewiring.
 
-    def replace_xor_with_nand(self) -> int:
+        make_replacement(a, b) → (new_output_wire, list_of_new_Gates)
+        Returns the count of new gates added.
+        """
+        # Build signal → [(gate_name, input_idx)] map once for O(fanout) rewiring.
+        sig_loads: Dict[str, List[Tuple[str, int]]] = {}
+        for gobj in self.nl.gates.values():
+            if gobj.kind == GateKind.DFF:
+                for pname, psig in gobj.dff_ports.items():
+                    sig_loads.setdefault(psig.key(), []).append((gobj.name, pname))  # type: ignore[arg-type]
+            else:
+                for iidx, inp in enumerate(gobj.inputs):
+                    sig_loads.setdefault(inp.key(), []).append((gobj.name, iidx))
+
         added = 0
         for g in list(self.nl.gates.values()):
-            if g.kind != GateKind.XOR:
+            if g.kind != kind:
                 continue
             a, b = g.inputs[0], g.inputs[1]
             out = g.output.key()
-            n1, n2, n3, w = (self.nl.next_wire_name() for _ in range(4))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NAND, Signal.parse(n1), [a, b]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NAND, Signal.parse(n2), [a, Signal.parse(n1)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NAND, Signal.parse(n3), [b, Signal.parse(n1)]))
-            self.nl.add_gate(Gate(self.nl.next_gate_name(), GateKind.NAND, Signal.parse(w), [Signal.parse(n2), Signal.parse(n3)]))
-            self._replace_signal(out, w)
+            w, new_gates = make_replacement(a, b)
+            for ng in new_gates:
+                self.nl.add_gate(ng)
+            # Targeted rewire: only touch gates that consume 'out'
+            for load_name, idx_or_port in sig_loads.get(out, []):
+                load_g = self.nl.gates.get(load_name)
+                if load_g is None:
+                    continue
+                if isinstance(idx_or_port, str):
+                    if load_g.dff_ports.get(idx_or_port, Signal.parse("")).key() == out:
+                        load_g.dff_ports[idx_or_port] = Signal.parse(w)
+                else:
+                    load_g.inputs = [
+                        Signal.parse(w) if (i == idx_or_port and inp.key() == out) else inp
+                        for i, inp in enumerate(load_g.inputs)
+                    ]
+            # Patch any PO whose signal name matched 'out'
+            # (covers port-wired outputs that have no gate driver)
+            added += len(new_gates)
             self.nl.remove_gate(g.name)
-            added += 4
         self.refresh()
         return added
+
+    def replace_xnor_with_nor(self) -> int:
+        def make_nor(a: Signal, b: Signal) -> Tuple[str, List[Gate]]:
+            n1, n2, n3, n4, w = (self.nl.next_wire_name() for _ in range(5))
+            return w, [
+                Gate(self.nl.next_gate_name(), GateKind.NOR, Signal.parse(n1), [a, b]),
+                Gate(self.nl.next_gate_name(), GateKind.NOR, Signal.parse(n2), [a, Signal.parse(n1)]),
+                Gate(self.nl.next_gate_name(), GateKind.NOR, Signal.parse(n3), [b, Signal.parse(n1)]),
+                Gate(self.nl.next_gate_name(), GateKind.NOR, Signal.parse(n4), [Signal.parse(n2), Signal.parse(n3)]),
+                Gate(self.nl.next_gate_name(), GateKind.NOR, Signal.parse(w), [Signal.parse(n4), Signal.parse(n4)]),
+            ]
+        return self._bulk_replace_gates(GateKind.XNOR, make_nor)
+
+    def replace_xor_with_nand(self) -> int:
+        def make_nand(a: Signal, b: Signal) -> Tuple[str, List[Gate]]:
+            n1, n2, n3, w = (self.nl.next_wire_name() for _ in range(4))
+            return w, [
+                Gate(self.nl.next_gate_name(), GateKind.NAND, Signal.parse(n1), [a, b]),
+                Gate(self.nl.next_gate_name(), GateKind.NAND, Signal.parse(n2), [a, Signal.parse(n1)]),
+                Gate(self.nl.next_gate_name(), GateKind.NAND, Signal.parse(n3), [b, Signal.parse(n1)]),
+                Gate(self.nl.next_gate_name(), GateKind.NAND, Signal.parse(w), [Signal.parse(n2), Signal.parse(n3)]),
+            ]
+        return self._bulk_replace_gates(GateKind.XOR, make_nand)
 
     def merge_structural_duplicates(self) -> int:
         merged = 0
@@ -770,7 +879,9 @@ class TransformEngine:
         for old, new in rep.items():
             self._replace_signal(old, new)
         for gname in list(self.nl.gate_order):
-            g = self.nl.gates[gname]
+            g = self.nl.gates.get(gname)
+            if not g:
+                continue
             if g.output.key() in rep and gname not in [self.nl.gates[k].name for k in self.nl.gates if self.nl.gates[k].output.key() == rep[g.output.key()]]:
                 pass
         # Remove duplicate drivers

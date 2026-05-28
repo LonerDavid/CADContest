@@ -121,6 +121,7 @@ class DesignDAG:
 
     def refresh(self) -> None:
         """Rebuild graph and DAG topology after netlist mutation."""
+        self.netlist._compact_gate_order()
         self.graph = CircuitGraph.from_netlist(self.netlist)
         self._build_topology()
 

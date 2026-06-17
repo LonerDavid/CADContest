@@ -7,8 +7,6 @@ Usage: ./cada1089_alpha -config <config.yaml>
 from __future__ import annotations
 
 import argparse
-import os
-import re
 import sys
 from pathlib import Path
 
@@ -16,14 +14,11 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from python.agent.handler import RequestHandler
+from python.agent.handler import NEW_CASE_RE, RequestHandler, extract_case_name
 from python.agent.llm import LLMClient
 from python.config import load_config
 from python.eda.context import EDASession
 from python.response import ResponseWriter
-
-CASE_RE = re.compile(r"case\s+name\s+is\s+(\w+)", re.I)
-NEW_CASE_RE = re.compile(r"beginning.*testcase|new\s+testcase", re.I)
 
 
 def main() -> int:
@@ -40,7 +35,7 @@ def main() -> int:
 
     cfg = load_config(args.config_path)
     session = EDASession()
-    llm = None if os.environ.get("CADCONTEST_NO_LLM") == "1" else LLMClient(cfg)
+    llm = LLMClient(cfg)
     handler = RequestHandler(session, llm)
     writer = ResponseWriter()
 
@@ -49,9 +44,10 @@ def main() -> int:
         if not request.strip():
             continue
 
-        m = CASE_RE.search(request)
-        if m and NEW_CASE_RE.search(request):
-            writer.begin_testcase(m.group(1))
+        if NEW_CASE_RE.search(request):
+            name = extract_case_name(request)
+            if name:
+                writer.begin_testcase(name)
 
         try:
             result = handler.handle(request)

@@ -1,8 +1,8 @@
 # ICCAD 2026 Problem A — 專案進度與待辦
 
 > **專案**：LLM-Assisted Netlist Exploration and Transformation  
-> **執行檔**：`./cada0001_alpha -config config.yaml`  
-> **最後更新**：2026-05-23
+> **執行檔**：`./cada1089_alpha -config config.yaml`  
+> **最後更新**：2026-06-18
 
 ---
 
@@ -49,19 +49,64 @@
 
 - 輸出統一目錄：`output/testNN/`（`.log` + `*_out.v`）
 - 批次腳本：`scripts/run_all_tests.sh`、`scripts/run_tests_range.sh`
-- 批次模式可關閉 LLM：`CADCONTEST_NO_LLM=1`（規則匹配，不耗 API）
 - `config.yaml` 已加入 `.gitignore`
+- **LLM fallback 測試**：`CADCONTEST_FORCE_LLM=1` 跳過規則、全部走 LLM；
+  `scripts/llm_fallback_eval.py` 以規則輸出為 golden 逐句對比 LLM（量化命中率）
+- **工具目錄已對齊**：`tool_spec.py` 的 LLM 工具清單補齊 `extras.py` 全部工具，
+  避免 LLM 因清單缺漏而選錯（例如「問幾個」誤選列舉工具）
+- **LLM 健壯性**：`llm.py` 只解析第一個完整 JSON 物件（容忍模型多輸出）；
+  `context.py` 加工具別名（`remap_xor_nand`→`replace_xor_nand` 等），避免 Unknown tool
+- **case 名稱擷取**：`main.py`/`handler.py` 支援 `case name is "X"`（引號）與
+  `beginning of testcase X` 兩種 PDF 句式（`extract_case_name`）
+- **VM 部署**：`scripts/deploy_to_vm.sh`（經 EDAUnion 跳板 rsync + 可選 C++ 編譯）；
+  用法見 `docs/DEPLOY.md`（三種模式：`upload` / `full` / `cpp`）
+
+### 2.5 LLM fallback 全量評測（`CADCONTEST_FORCE_LLM`）
+
+> 以規則輸出為 golden，強制全部走 LLM，量化 LLM 單獨命中率（2026-06-18）
+
+- 全 40 題：**434/487 (89%) 命中**，mismatch=50，err=3（報告：`output/llm_fallback_report.txt`）
+- 剩餘分歧主要類型：
+  1. 工具選擇近似但不同（`fanout_report` vs `max_fanout_signal` vs `gates_driven_by`）
+  2. gate 名（如 g0）當成 signal 餵給 `fanout_report` → 0，規則會先做 gate→output net 映射
+  3. 「轉換後有幾個 X gate」規則答成「執行轉換」訊息，LLM 則回計數（部分情況 LLM 更正確）
+  4. transform 後狀態相依，規則/LLM 順序差異導致數字不同（難以單純判定對錯）
+
+### 2.6 PDF 規格合規檢查（A_20260212.pdf）
+
+| 要求 | 狀態 | 備註 |
+|------|------|------|
+| 執行檔 `cadaXXXX_alpha -config <path>` | ✅ | `cada1089_alpha`（team 1089），`main.py` 解析 `-config` |
+| 讀入單一 module flat Verilog | ✅ | `parser.py` 支援 module/port/wire（scalar+bus） |
+| 原語 and/or/nand/nor/not/buf/xor/xnor + dff | ✅ | dff 實際格式 `.RN/.SN/.CK/.D/.Q` 已支援 |
+| 常數 1'b0 / 1'b1 | ✅ | `Signal.parse` 處理 |
+| bus（如 `[31:0]`） | ✅ | port/wire bus 解析 + 位元索引 |
+| 寫出 gate-level Verilog | ✅ | `writer.py` |
+| stdin 逐行請求 | ✅ | `main.py` 迴圈 |
+| `#RESPONSE <id>`…`#END <id>`，id 由 1 遞增、每 testcase 重置 | ✅ | `response.py`；`#END` 同步輸出 stdout |
+| 開頭句設定 case 名稱 / log 檔名（含引號、`testcase X` 句式） | ✅ | 已補強 `extract_case_name` |
+| 寫 `<case>.log` | ✅ | `output/<case>/<case>.log` |
+| LLM config（openai gpt-4o-mini / anthropic claude-haiku-4-5） | ✅ | `config.yaml` 與 PDF Figure 6 一致 |
+| 向 LLM 描述 EDA 介面 | ✅ | `tool_spec.py` 注入 system prompt |
+| 基本操作 ≤60s / 其他 ≤300s | ⚠️ | 多數遠低於上限；超大電路（test12 91k gates、test39）需留意 |
+
+**潛在風險**：
+- dff 若用小寫 `.q/.d` 實例，`parser.py` 的 `get("Q")/get("D")` 會漏接（目前 benchmark 為大寫，無問題）。
+- 路徑完整枚舉在超大電路改為存在性回答，須確認評測是否接受。
 
 ### 2.4 Sample testcase 執行進度（40 題）
 
-> 判定：**完整** = 回應數 = prompt 行數 且 有 `testNN_out.v`
+> 判定：**完整** = 回應數 = prompt 行數 且 有 `testNN_out.v`  
+> 最近一次完整批次：2026-06-18，總耗時約 6.5 分鐘
 
 | 狀態 | 數量 | Testcase |
 |------|------|----------|
-| ✅ 完整 | **39** | test01–test38、test40 |
-| ⚠️ 未完成 | **1** | test39（11/20 則回應，無 `test39_out.v`） |
+| ✅ 完整 | **40** | test01–test40 |
+| ⚠️ 未完成 | **0** | — |
 
-**test12 備註**：netlist 極大（約 **91,583 gates**），單次解析約 **165 秒**；完整跑完需數小時級時間，目前已有 log 與 out.v，但回應數可能與 prompt 行數不一致（曾多次重跑累積）。
+**最慢題目**：test39（105s）、test12（48s）、test35（48s）、test34（47s）、test37（31s）。
+
+**test12 備註**：netlist 極大（約 **91,583 gates**），本次以 48s 完成 11/11；歷史上單次解析曾達 ~165 秒，視機器狀態而定。
 
 ---
 
@@ -80,7 +125,7 @@
 | test09 | 8 | 8 | ✅ | 完整 |
 | test10 | 9 | 9 | ✅ | 完整 |
 | test11 | 10 | 10 | ✅ | 完整 |
-| test12 | 17* | 11 | ✅ | 超大電路，耗時極長 |
+| test12 | 11 | 11 | ✅ | 完整（超大電路，~48s） |
 | test13 | 12 | 12 | ✅ | 完整 |
 | test14 | 13 | 13 | ✅ | 完整 |
 | test15 | 14 | 14 | ✅ | 完整 |
@@ -107,10 +152,8 @@
 | test36 | 20 | 20 | ✅ | 完整 |
 | test37 | 20 | 20 | ✅ | 完整 |
 | test38 | 20 | 20 | ✅ | 完整 |
-| test39 | 11 | 20 | ❌ | **待補跑** |
+| test39 | 20 | 20 | ✅ | 完整（最慢，~105s） |
 | test40 | 20 | 20 | ✅ | 完整 |
-
-\* test12 回應數 > prompt 行數：可能為多次批次重跑所致，需人工核對 log 是否連續 id 1–11。
 
 ---
 
@@ -120,9 +163,8 @@
 
 | # | 問題 | 影響 | 建議方向 |
 |---|------|------|----------|
-| 1 | **test39 未完成**（11/20，無 out.v） | 40 題中缺 1 題完整輸出 | 單獨重跑：`cat testcase/test39/prompt.txt \| ./cada0001_alpha -config config.yaml` |
-| 2 | **超大 netlist 效能**（test12：91k gates，解析 ~165s） | 逾時、批次中斷 | 優化 parser；或快取已解析 DAG；大電路分析走快速路徑 |
-| 3 | **答案正確性未對標官方** | 有跑完 ≠ 有得分 | 需對照評測腳本 / golden answer（若公布）做 regression |
+| 1 | **超大 netlist 效能**（test12：91k gates） | 大題耗時，極端情況可能逾時 | 優化 parser；或快取已解析 DAG；大電路分析走快速路徑 |
+| 2 | **答案正確性未對標官方** | 有跑完 ≠ 有得分 | 需對照評測腳本 / golden answer（若公布）做 regression |
 
 ### 🟡 中優先
 
@@ -130,7 +172,8 @@
 |---|------|------|----------|
 | 4 | 批次 **300s timeout** 對大題不夠 | test12/14/33 等曾 `exit 124` | 腳本已改 600s；大題可單獨跑、不設 timeout |
 | 5 | **路徑完整枚舉** 在大電路上不可行 | Contest 若要求列舉所有 path 可能答錯 | 已對 >15k gates 改為「存在性 + 說明跳過枚舉」；需確認評測是否接受 |
-| 6 | **規則匹配覆蓋率** | 未匹配時才呼叫 LLM | 補齊 `handler.py` 規則；或強化 Tool Spec + LLM 規劃 |
+| 6 | **規則匹配覆蓋率** | 未匹配時才呼叫 LLM（已移除 `CADCONTEST_NO_LLM`，批次也會走 LLM fallback）；LLM 工具清單已對齊 `extras.py` | 用 `scripts/llm_fallback_eval.py` 量化 LLM 命中率，持續補齊規則 / 強化 Tool Spec |
+| 6b | **規則引擎既有 bug**（`llm_fallback_eval.py` 揪出） | test31 L12/L13 rename 類請求，新名稱被截斷 / 誤判成 rename_gate | 修正 `handler.py` 的 `rename_wire` / `rename_gate` 名稱擷取（`to\s+(\w+)` 與分支判斷） |
 | 7 | **變換品質**（depth/fanout 優化） | 可能未達最優 cost | 加強 `optimize_cone_depth`、AIG/ABC 等（若允許） |
 
 ### 🟢 低優先 / 維護
@@ -161,11 +204,7 @@ pip install -r requirements.txt
 cp config.example.yaml config.yaml   # 填入 api_key
 
 # 單題（建議先 test01）
-cat testcase/test01/prompt.txt | ./cada0001_alpha -config config.yaml
-
-# 不呼叫 LLM
-export CADCONTEST_NO_LLM=1
-cat testcase/test01/prompt.txt | ./cada0001_alpha -config config.yaml
+cat testcase/test01/prompt.txt | ./cada1089_alpha -config config.yaml
 
 # 批次 40 題
 ./scripts/run_all_tests.sh config.yaml
@@ -173,13 +212,22 @@ cat testcase/test01/prompt.txt | ./cada0001_alpha -config config.yaml
 
 **config.yaml `api_key`**：一般 **不必** 加引號；含特殊字元時用雙引號 `"..."`。
 
+### Token 用量本地記錄
+
+每次呼叫 LLM 會把用量寫到本地檔（不需等 OpenAI Console 更新）：
+
+- `output/token_usage.csv`：逐筆紀錄（時間、provider、model、case、prompt/completion/total tokens、request 摘要）
+- `output/token_usage.csv.summary.json`：累計總量（含 by-model 分項）
+
+可用環境變數 `CADCONTEST_TOKEN_LOG` 指定 CSV 路徑（summary 會放在同名 `.summary.json`）。兩者皆在 `output/`（已 gitignore）。注意：未命中規則、實際呼叫 LLM 時才會有紀錄。
+
 ---
 
 ## 七、目錄結構（精簡）
 
 ```
 cadcontest/
-├── cada0001_alpha          # 入口
+├── cada1089_alpha          # 入口
 ├── config.yaml             # LLM 設定（gitignore）
 ├── python/
 │   ├── main.py
@@ -195,7 +243,7 @@ cadcontest/
 
 ## 八、下一步建議（優先順序）
 
-1. [ ] 補跑 **test39** 至 20/20 並產生 `test39_out.v`  
+1. [x] 補跑 **test39** 至 20/20 並產生 `test39_out.v`（2026-06-18 完成，40/40 全通過）  
 2. [ ] 抽樣核對 test21（fanout≤4）、test30（depth 優化）等變換題的 **功能等價**  
 3. [ ] 針對 test12 做 **parser / 載入快取** 優化  
 4. [ ] 整理尚未被規則覆蓋的 prompt 句式，擴充 `handler.py`  

@@ -52,7 +52,18 @@ class EDASession:
         self.engine.write(out)
         return f'Wrote the modified netlist to "{out}" successfully.'
 
+    # Common LLM aliases -> canonical tool names.
+    _TOOL_ALIASES = {
+        "remap_xor_nand": "replace_xor_nand",
+        "remap_xnor_nor": "replace_xnor_nor",
+        "replace_xor_with_nand": "replace_xor_nand",
+        "replace_xnor_with_nor": "replace_xnor_nor",
+        "count_gates_by_type": "count_gate_type",
+        "gate_count": "count_gates",
+    }
+
     def execute_tool(self, name: str, args: Dict[str, Any]) -> str:
+        name = self._TOOL_ALIASES.get(name, name)
         if name == "init_testcase":
             return self.init_testcase(args["case_name"])
         if name == "load_design":

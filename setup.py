@@ -8,7 +8,10 @@ ext = Pybind11Extension(
     "eda_core",
     sources=["cpp/eda_core/eda_core.cpp"],
     cxx_std=17,
-    extra_compile_args=["-O3", "-march=native"],
+    # -O3 only: portable across any x86-64 node. Avoid -march=native so the
+    # built .so cannot hit "Illegal instruction" if the eval node's CPU differs
+    # from the build node.
+    extra_compile_args=["-O3"],
 )
 
 setup(

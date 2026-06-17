@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from .llm import LLMClient
 from ..eda.context import EDASession
 
-CASE_RE = re.compile(r"case name is\s+(\w+)", re.I)
+CASE_RE = re.compile(r"case\s+name\s+is\s+['\"`]?(\w+)", re.I)
+TESTCASE_NAME_RE = re.compile(r"testcase\s+['\"`]?(\w+)", re.I)
+NEW_CASE_RE = re.compile(r"beginning.*testcase|new\s+testcase", re.I)
 LOAD_RE = re.compile(r"file\s+([^\s'\"]+\.v)", re.I)
 LOAD_DIR_RE = re.compile(r"directory\s+([^\s'\"./]+(?:/[^\s'\"./]+)*)/?", re.I)
 WRITE_RE = re.compile(
@@ -21,6 +24,20 @@ WRITE_RE = re.compile(
 _NAMED_SIG_RE = re.compile(r"\b(?:signal|wire)\s+(\w+)", re.I)
 
 
+def extract_case_name(text: str) -> Optional[str]:
+    """Robustly pull the testcase name from a begin-of-testcase request.
+
+    Handles 'case name is X', 'case name is "X"', and 'beginning of testcase X'.
+    """
+    m = CASE_RE.search(text)
+    if m:
+        return m.group(1)
+    m = TESTCASE_NAME_RE.search(text)
+    if m:
+        return m.group(1)
+    return None
+
+
 def _extract_signals(text: str) -> List[str]:
     results = re.findall(r"n\d+(?:\[\d+\])?|g\d+", text)
     if not results:
@@ -30,23 +47,42 @@ def _extract_signals(text: str) -> List[str]:
     return results
 
 
+def _rename_target(text: str, old: str) -> Optional[str]:
+    """Extract the new name in a 'rename OLD to NEW' request.
+
+    Searches for 'to <name>' only AFTER the old name so leading phrases like
+    'Try to rename ...' don't get mistaken for the target.
+    """
+    tail = text
+    if old:
+        idx = text.find(old)
+        if idx >= 0:
+            tail = text[idx + len(old):]
+    m = re.search(r"\bto\s+(\w+)", tail)
+    return m.group(1) if m else None
+
+
 class RequestHandler:
     def __init__(self, session: EDASession, llm: Optional[LLMClient] = None):
         self.session = session
         self.llm = llm
+        # Testing aid: skip rule matching so every request exercises the LLM
+        # fallback path (mirrors hidden testcases whose phrasing misses rules).
+        self.force_llm = os.environ.get("CADCONTEST_FORCE_LLM") == "1"
 
     def handle(self, request: str) -> str:
         req = request.strip()
         if not req:
             return "Empty request received."
 
-        tool = self._rule_match(req)
-        if tool:
-            name, args = tool
-            try:
-                return self.session.execute_tool(name, args)
-            except Exception as e:
-                return f"Error executing {name}: {e}"
+        if not self.force_llm:
+            tool = self._rule_match(req)
+            if tool:
+                name, args = tool
+                try:
+                    return self.session.execute_tool(name, args)
+                except Exception as e:
+                    return f"Error executing {name}: {e}"
 
         if self.llm:
             try:
@@ -62,9 +98,10 @@ class RequestHandler:
     def _rule_match(self, req: str) -> Optional[Tuple[str, Dict[str, Any]]]:
         low = req.lower()
 
-        m = CASE_RE.search(req)
-        if m and ("beginning" in low or "new testcase" in low):
-            return ("init_testcase", {"case_name": m.group(1)})
+        if NEW_CASE_RE.search(req):
+            name = extract_case_name(req)
+            if name:
+                return ("init_testcase", {"case_name": name})
 
         if "load" in low and ".v" in req:
             fm = LOAD_RE.search(req)
@@ -162,7 +199,7 @@ class RequestHandler:
             sigs = _extract_signals(req)
             if len(sigs) >= 2:
                 return ("functional_equivalence", {"a": sigs[0], "b": sigs[1]})
-        '''
+        r'''
         if "insert buffers" in low and "fanout" in low or "no gate drives more than" in low or "maximum fanout" in low:
             mf = 4
             mm = re.search(r"more than\s+(\d+)", low)
@@ -197,17 +234,17 @@ class RequestHandler:
                 or ("floating" in low and "remove" in low)):
             return ("remove_dangling", {})
 
-        if "rename" in low and "gate" in low:
+        if re.search(r"\brename\b", low) and "gate" in low:
             sigs = _extract_signals(req)
-            nm = re.search(r"to\s+(\w+)", req)
-            if sigs and nm:
-                return ("rename_gate", {"old": sigs[0], "new": nm.group(1)})
+            new = _rename_target(req, sigs[0] if sigs else "")
+            if sigs and new:
+                return ("rename_gate", {"old": sigs[0], "new": new})
 
-        if "rename" in low and ("wire" in low or "signal" in low):
+        if re.search(r"\brename\b", low) and ("wire" in low or "signal" in low):
             sigs = _extract_signals(req)
-            nm = re.search(r"to\s+(\w+)", req)
-            if sigs and nm:
-                return ("rename_wire", {"old": sigs[0], "new": nm.group(1)})
+            new = _rename_target(req, sigs[0] if sigs else "")
+            if sigs and new:
+                return ("rename_wire", {"old": sigs[0], "new": new})
 
         if "back-to-back invert" in low or "back to back invert" in low:
             return ("collapse_inverters", {})

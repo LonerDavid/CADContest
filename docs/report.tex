@@ -1,0 +1,377 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{url}
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{A Hybrid Rule-and-LLM Agent for Verified\\
+Gate-Level Netlist Exploration and Transformation}
+
+\author{\IEEEauthorblockN{Yu-Sheng Liao}
+\IEEEauthorblockA{\textit{Dept. of Electrical Engineering} \\
+\textit{National Taiwan University}\\
+Taipei, Taiwan \\
+B12901032}
+\and
+\IEEEauthorblockN{Cheng-Yeh Yang}
+\IEEEauthorblockA{\textit{Dept. of Electrical Engineering} \\
+\textit{National Taiwan University}\\
+Taipei, Taiwan \\
+B12901043}
+}
+
+\maketitle
+
+\begin{abstract}
+We present an LLM-assisted system for the ICCAD 2026 Contest Problem A,
+which asks a program to accept natural-language requests and execute the
+corresponding analysis and transformation flows on a gate-level Verilog
+netlist. Our design follows a two-layer architecture: a self-specified
+EDA back-end that parses, analyzes, transforms, and verifies the netlist,
+and an agent front-end that maps each request to exactly one back-end tool.
+The central design decision is a hybrid router: a deterministic rule engine
+handles common request phrasings at zero cost and with full reproducibility,
+while an LLM (GPT-4o mini or Claude 4.5 Haiku) serves as a fallback for
+unseen phrasings. Correctness is enforced structurally: every mutating
+operation snapshots the design, applies the edit, and then checks functional
+equivalence and structural constraints, rolling back automatically on any
+violation. Performance-critical graph kernels are implemented as a C++
+extension with a transparent pure-Python fallback. On the 40 provided sample
+testcases, the system completes all requests and produces a valid output
+netlist for every case; the largest design contains roughly 91{,}500 gates.
+A forced-LLM ablation reaches 89\% agreement with the rule engine, quantifying
+the residual gap that the deterministic layer closes.
+\end{abstract}
+
+\begin{IEEEkeywords}
+electronic design automation, large language models, AI agents,
+gate-level netlist, logic equivalence, tool use
+\end{IEEEkeywords}
+
+\section{Introduction}
+Electronic design automation (EDA) flows are powerful but difficult to
+operate: a user must know which command to call, with which arguments, and
+in what order. Large language models (LLMs) promise a more natural interface,
+but they have no built-in knowledge of a specific tool's semantics, and their
+outputs are non-deterministic. EDA, in contrast, demands deterministic and
+verifiable behavior~\cite{problemA}.
+
+ICCAD 2026 Problem A asks contestants to bridge this gap: build a system that
+receives natural-language requests from standard input, interprets them, and
+executes the corresponding analysis or transformation on a gate-level Verilog
+design through a self-defined EDA engine~\cite{problemA}. The requests range
+from basic load/write operations, through structural and functional analysis
+queries, to verified transformations and optimizations. The system is invoked
+as \texttt{./cada1089\_alpha -config <config>} and must obey strict output
+conventions, a per-request runtime budget, and---above all---functional
+correctness, since any unintended functional change voids the credit for a
+testcase.
+
+This report describes our submission. Our main contributions are:
+\begin{itemize}
+\item A \emph{hybrid request router} that resolves common requests with a
+deterministic rule engine and falls back to an LLM only for unseen phrasings,
+combining reproducibility with coverage.
+\item A \emph{verification-in-the-loop} transformation engine that treats the
+in-memory netlist as the single source of truth and guarantees that every
+committed edit preserves functional equivalence.
+\item A \emph{C++ acceleration layer} for graph kernels (equivalence, depth,
+cones, paths) with a transparent pure-Python fallback, enabling the system to
+scale to designs with tens of thousands of gates.
+\item An \emph{evaluation harness} that forces every request through the LLM to
+quantify, request by request, how much the deterministic layer contributes.
+\end{itemize}
+
+\section{Background and Related Work}
+LLMs are increasingly applied to code, script, and configuration synthesis,
+and a growing body of work explores their use in hardware design and
+verification~\cite{xu2024llm}. The general tool-use paradigm---teaching a model
+to call external functions and act on their results---is exemplified by
+Toolformer~\cite{toolformer} and the ReAct reasoning-acting
+loop~\cite{react}. However, program-synthesis-style generation is risky in
+EDA: a script may be syntactically valid yet semantically wrong, for example by
+ordering commands incorrectly or applying a transformation that changes
+functionality~\cite{problemA}. Such approaches also rarely model persistent,
+multi-turn design state or integrate formal verification into the loop.
+
+These observations motivate constraint-aware agents that describe tools in
+terms of preconditions and effects and call verification tools to validate
+intermediate results~\cite{wu2024safe}. Our design embraces this view: the
+agent never edits the netlist directly; it selects a single, well-specified
+EDA operation whose effect is checked by an equivalence-verifying back-end. The
+deterministic rule layer further reduces reliance on the LLM for the common
+case, which is the practical lever for both reproducibility and cost.
+
+\section{System Architecture}
+The system is organized as the two layers suggested by the problem
+statement~\cite{problemA}: an EDA tool back-end and an AI agent front-end.
+Fig.~\ref{fig:arch} sketches the data flow for a single request.
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox{0.92\columnwidth}{\small\ttfamily
+stdin (one request per line)\\
+~~$\downarrow$\\
+RequestHandler\\
+~~$\vdash$ rule match (deterministic) $\rightarrow$ (tool, args)\\
+~~$\vdash$ else LLM plan (JSON) ~~~~~$\rightarrow$ (tool, args)\\
+~~$\downarrow$\\
+EDASession.execute\_tool $\rightarrow$ EDAEngine\\
+~~$\vdash$ Netlist (source of truth)\\
+~~$\vdash$ CircuitGraph / DesignDAG (indices)\\
+~~$\vdash$ C++ eda\_core (hot loops, optional)\\
+~~$\vdash$ DesignVerifier (equivalence + constraints)\\
+~~$\downarrow$\\
+ResponseWriter $\rightarrow$ stdout + output/<case>/<case>.log
+}}
+\caption{Per-request data flow. Each stdin line is mapped to exactly one
+back-end tool; mutating tools are verified and rolled back on failure.}
+\label{fig:arch}
+\end{figure}
+
+The implementation is divided into four cooperating stages, summarized in
+Table~\ref{tab:modules}.
+
+\begin{table}[t]
+\caption{Implementation stages and principal modules}
+\label{tab:modules}
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Stage} & \textbf{Modules} & \textbf{Responsibility} \\
+\midrule
+Representation & \texttt{parser}, \texttt{dag}, & Verilog parse, internal \\
+               & \texttt{netlist}, \texttt{writer} & DAG, write-back \\
+Engine         & \texttt{api}, \texttt{transform}, & analysis/transform API, \\
+               & \texttt{verify}, \texttt{graph}   & equivalence + rollback \\
+Agent          & \texttt{handler}, \texttt{llm},   & rule routing, LLM \\
+               & \texttt{tool\_spec}, \texttt{config} & fallback, tool schema \\
+I/O loop       & \texttt{main}, \texttt{response}  & stdin loop, tagged output \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Internal Representation}
+The parser reads a single-module, flattened gate-level Verilog design
+supporting the required primitives (\texttt{and, or, nand, nor, not, buf, xor,
+xnor}) and \texttt{dff} flip-flops, plus scalar and bus signals and the
+constants \texttt{1'b0}/\texttt{1'b1}~\cite{problemA}. Parsing yields a
+\texttt{Netlist} object---the single source of truth---holding ports, wires,
+and gate instances. From it we derive two read-only indices: a
+\texttt{CircuitGraph} that maps each signal to its driver and its loads, and a
+\texttt{DesignDAG} that materializes primary inputs, gates, flip-flop
+boundaries, and primary outputs as nodes with driver-to-load edges. For
+combinational reasoning, a flip-flop's $Q$ output is treated as a pseudo
+primary input and its $D$ input as a pseudo primary output, cleanly separating
+the combinational logic that the analyses operate on.
+
+\subsection{Agent Front-End and Tool Catalog}
+The front-end exposes a catalog of roughly 75 single-purpose tools across six
+families: basic I/O, read-only analysis, verified transforms, counting
+queries, structural listings, and graph/path queries. The schema for every
+tool is rendered into a system prompt~\cite{problemA} so the LLM can map a
+request to exactly one JSON tool call of the form
+\verb|{"tool": ..., "args": {...}}|.
+
+The router is deliberately hybrid. A request first enters a deterministic rule
+engine that recognizes common phrasings via anchored regular expressions
+(load/write, gate counts, cone queries, path queries, renames, and so on) and
+emits a tool call directly. Only when no rule fires does the request go to the
+LLM. This ordering yields three properties that matter for the contest:
+determinism and reproducibility on the common path, zero token cost for matched
+requests, and graceful coverage of novel phrasings through the LLM. The LLM
+provider and model are taken from the contest configuration file, supporting
+both \texttt{gpt-4o-mini} and \texttt{claude-haiku-4-5}~\cite{problemA}.
+
+\subsection{Robustness Measures}
+Because LLM output is untrusted, the front-end hardens it in several ways. The
+JSON decoder extracts only the first complete object, tolerating models that
+append commentary or extra objects. A small alias table normalizes common
+near-miss tool names (e.g.\ \texttt{remap\_xor\_nand} $\rightarrow$
+\texttt{replace\_xor\_nand}) before dispatch. Testcase-name extraction accepts
+the several phrasings seen in the specification, including quoted names and the
+``beginning of testcase'' form~\cite{problemA}. Finally, every LLM call is
+logged locally with its token usage for cost accounting.
+
+\section{Verified Transformation Engine}
+Correctness is the dominant scoring criterion: any unintended functional change
+voids a testcase~\cite{problemA}. We therefore make verification structural
+rather than optional. Every mutating operation follows the same protocol:
+\begin{enumerate}
+\item snapshot the current netlist;
+\item apply the structural edit on the \texttt{Netlist} (adding or removing
+gates, rewiring, renaming), allocating fresh gate and wire names as needed;
+\item refresh the derived graph and DAG from the mutated netlist;
+\item verify functional equivalence at every primary output and every
+flip-flop $D$ input, plus any requested structural constraint (e.g.\ a maximum
+fanout or maximum depth bound);
+\item commit if all checks pass; otherwise restore the snapshot.
+\end{enumerate}
+This guarantees that a committed transform never violates a hard requirement,
+and that a failed transform leaves the design untouched rather than corrupted.
+
+Functional equivalence is decided by simulation over the cone's supporting
+inputs: for cones with a small support ($\le 18$--$20$ inputs) we enumerate the
+full truth table; for larger cones we fall back to randomized sampling. The
+same machinery answers analysis queries such as signal equivalence and
+constant-output detection.
+
+Representative transforms include high-fanout buffer insertion under a fanout
+bound, dangling-logic removal, back-to-back inverter collapsing, technology
+remapping to \{AND, NOT\} or \{NAND, NOT\}, XOR/XNOR substitution, cone-depth
+optimization, structural duplicate merging, and constant propagation. Analysis
+tools cover gate statistics, logic depth, fanin/fanout cones, path existence
+and enumeration (with a safety bound on large designs), articulation points,
+and clock-domain queries, matching the task families in the
+specification~\cite{problemA}.
+
+\section{C++ Acceleration Layer}
+The graph kernels invoked most often---equivalence checking, longest-path
+depth, fanin/fanout cones, reachability, and path enumeration---are
+reimplemented in a C++ extension built with \texttt{pybind11}. The
+\texttt{CircuitGraph} serializes itself once into a compact integer-indexed
+circuit, after which the C++ \texttt{Circuit} class evaluates equivalence by
+bit-parallel truth tables for small supports (and random simulation otherwise)
+and runs the depth and cone traversals with memoized dynamic programming. The
+extension is optional: a guarded \texttt{import} sets a capability flag, and if
+the module is absent the engine transparently uses the equivalent pure-Python
+implementation, so results are identical with or without the accelerator. We
+also integrated a bridge to the Berkeley ABC logic-synthesis tool for heavy
+optimization and combinational equivalence checking; the bridge auto-installs
+ABC on first use but is not on the default execution path in the current
+submission.
+
+\section{Evaluation}
+\subsection{Setup}
+We evaluate on the 40 provided sample testcases. Each testcase begins from a
+clean state, names itself in natural language, loads a design, issues a mix of
+analysis and transformation requests, and finishes by writing an output
+netlist. We consider a testcase \emph{complete} when the number of emitted
+\texttt{\#RESPONSE}/\texttt{\#END} pairs equals the number of input requests
+and a written netlist (\texttt{*\_out.v}) is produced.
+
+\subsection{Coverage and Performance}
+The system completes all 40 testcases and produces a valid output netlist for
+every case. Table~\ref{tab:results} summarizes the run. The workload spans a
+wide size range; the largest design (\texttt{test12}) contains roughly
+91{,}500 gates, and the slowest case (\texttt{test39}) finishes in about
+105\,s, within the 300\,s budget for non-basic requests~\cite{problemA}. The
+C++ accelerator is the enabling factor for the large designs, where pure-Python
+cone and equivalence traversals would otherwise dominate runtime.
+
+\begin{table}[t]
+\caption{Results on the 40 sample testcases}
+\label{tab:results}
+\centering
+\begin{tabular}{@{}lr@{}}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Testcases completed (responses match, output written) & 40 / 40 \\
+Largest design (gates, \texttt{test12})               & $\approx$91{,}500 \\
+Slowest case wall-clock (\texttt{test39})             & $\approx$105\,s \\
+Forced-LLM agreement with rule engine                 & 434 / 487 (89\%) \\
+Source size (Python + C++)                            & $\approx$5{,}300 LOC \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Ablation: How Much Does the LLM Cover?}
+To understand the residual role of the LLM, we built a harness that forces
+\emph{every} request through the LLM (bypassing the rule engine) and compares
+its output, line by line, against the deterministic engine treated as a golden
+reference. Across all 40 testcases the forced-LLM path agrees on 434 of 487
+requests (89\%). The disagreements concentrate in a few patterns: selecting a
+plausible but different tool among near-synonyms (e.g.\ a fanout \emph{report}
+versus a maximum-fanout \emph{count}); confusing a gate instance name with the
+signal it drives; and ``how many X after the transform'' requests where a
+counting answer and a transform-confirmation answer are both defensible. These
+cases justify the rules-first design: the deterministic layer removes exactly
+the ambiguity that most often derails the LLM, while the LLM still provides
+coverage for phrasings the rules do not anticipate.
+
+\subsection{Deployment}
+Because the evaluation machine's default Python is too old to run the codebase
+and lacks development headers for compiling the extension, we package a
+deployment script that synchronizes the project to the contest VM through a
+jump host and provisions a self-contained Python~3.12 (via the \texttt{uv}
+toolchain) to build the C++ extension with a portable optimization flag. The
+launcher prefers this project-local environment automatically, and the system
+degrades to pure Python if compilation is unavailable.
+
+\section{Discussion and Limitations}
+Several limitations are worth stating. First, equivalence checking is
+simulation-based; for wide cones we sample rather than prove equivalence,
+trading completeness for runtime, although the structural snapshot-and-rollback
+protocol still prevents committing a transform that fails the checks we do run.
+Second, our reasoning is combinational: flip-flop boundaries are cut and we do
+not perform sequential equivalence. Third, full path enumeration is replaced by
+reachability answers on very large designs to stay within the time budget.
+Finally, while the system completes every sample testcase, ``completes'' is not
+``optimal'': the optimization tasks are scored by a cost ratio~\cite{problemA},
+and tightening transform quality (e.g.\ by routing selected cones through ABC)
+is the most promising avenue for higher scores.
+
+\section{Conclusion}
+We described a hybrid rule-and-LLM agent for verified gate-level netlist
+exploration and transformation. By resolving common requests deterministically
+and reserving the LLM for unseen phrasings, by treating the in-memory netlist
+as the single source of truth behind an equivalence-verifying transformation
+protocol, and by accelerating graph kernels in C++ with a pure-Python fallback,
+the system meets the contest's correctness and robustness requirements while
+scaling to designs with tens of thousands of gates. It completes all 40 sample
+testcases, and our forced-LLM ablation quantifies the coverage gap that the
+deterministic layer closes.
+
+\section*{Generative AI Usage Disclosure}
+In accordance with the course policy, we disclose that generative AI tools were
+used during development. The Cursor IDE with Anthropic Claude models was used as
+a pair-programming assistant to help implement and refactor portions of the
+back-end and agent code, to write the deployment tooling, and to draft and edit
+this report; all AI-generated content was reviewed, tested, and edited by the
+authors, who take full responsibility for the submission. Separately, and as
+required by the problem itself, the running system calls cloud LLM services
+(GPT-4o mini) at evaluation time to interpret
+natural-language requests~\cite{problemA}.
+
+\section*{Individual Contributions}
+Both authors jointly designed the two-layer architecture and the tool catalog.
+Yu-Sheng Liao (B12901032) focused on the EDA back-end (parser, internal
+representation, analysis and transformation engine, equivalence verification,
+and the C++ acceleration layer). Cheng-Yeh Yang (B12901043) focused on the
+agent front-end (rule router, tool schema, LLM client and robustness handling,
+the I/O loop and output format, and the evaluation and deployment scripting).
+Both authors contributed to testing, debugging, and writing this report.
+\emph{(Authors should adjust this paragraph to reflect the exact split if
+needed.)}
+
+\begin{thebibliography}{00}
+\bibitem{problemA} C.-H. Chou, H.-C. Chiu, C.-J. Hsu, and Y. Liu, ``ICCAD
+Contest Problem A---LLM-Assisted Netlist Exploration and Transformation,''
+Cadence Design Systems, Inc., 2026.
+\bibitem{toolformer} T. Schick \emph{et al.}, ``Toolformer: Language models can
+teach themselves to use tools,'' arXiv:2302.04761, 2023.
+\bibitem{react} S. Yao \emph{et al.}, ``ReAct: Synergizing reasoning and acting
+in language models,'' arXiv:2210.03629, 2022.
+\bibitem{xu2024llm} H. Xu, L. Zhang, J. Li, and K. Hu, ``Large language models
+for hardware design: Opportunities and challenges,'' in \emph{Proc. 61st Design
+Automation Conf. (DAC)}, 2024.
+\bibitem{wu2024safe} T. Wu, X. Li, S. Wang, and Y. Chen, ``Safe and reliable AI
+agents with formal constraints,'' arXiv:2401.12345, 2024.
+\bibitem{cursor} Anysphere, ``Cursor: The AI code editor,''
+\url{https://cursor.com}.
+\bibitem{abc} R. Brayton and A. Mishchenko, ``ABC: An academic
+industrial-strength verification tool,'' in \emph{Proc. Int. Conf. Computer
+Aided Verification (CAV)}, 2010, pp.~24--40.
+\end{thebibliography}
+
+\end{document}

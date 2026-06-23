@@ -1,8 +1,9 @@
 # ICCAD 2026 Problem A — 專案進度與待辦
 
 > **專案**：LLM-Assisted Netlist Exploration and Transformation  
-> **執行檔**：`./cada0001_alpha -config config.yaml`  
-> **最後更新**：2026-05-23
+> **團隊**：Team 1089 — Yu-Sheng Liao (B12901032), Cheng-Yeh Yang (B12901043)  
+> **執行檔**：`./cada1089_alpha -config config.yaml`  
+> **最後更新**：2026-06-23
 
 ---
 
@@ -45,23 +46,72 @@
 - 技術映射（AND/NOT、NAND/NOT）、XOR/XNOR 替換
 - Cone depth 優化、duplicate 合併、常數傳播等
 
+**額外工具（`extras.py`）**
+- 計數 / 查詢、結構列表、路徑 / 圖論類工具（約 75 個工具，已寫入 `tool_spec.py`）
+
 ### 2.3 工程化
 
 - 輸出統一目錄：`output/testNN/`（`.log` + `*_out.v`）
-- 批次腳本：`scripts/run_all_tests.sh`、`scripts/run_tests_range.sh`
-- 批次模式可關閉 LLM：`CADCONTEST_NO_LLM=1`（規則匹配，不耗 API）
-- `config.yaml` 已加入 `.gitignore`
+- 批次腳本：`scripts/run_all_tests.sh`、`scripts/run_tests_range.sh`、`scripts/summarize_results.sh`
+- **Token 用量本地記錄**：`python/agent/usage_log.py` → `output/token_usage.csv` + `.summary.json`
+- **LLM fallback 評測**：`scripts/llm_fallback_eval.py`（`CADCONTEST_FORCE_LLM=1` 強制全走 LLM，與規則輸出對比）
+- **VM 部署**：`scripts/deploy_to_vm.sh`（經 EDAUnion 跳板 rsync；模式：`upload` / `full` / `cpp` / `uv`）；用法見 `docs/DEPLOY.md`
+- **C++ 加速**：`cpp/eda_core/`（pybind11）；VM 上以 `MODE=uv` 建 `.venv` + 可移植 `-O3` 編譯 `.so`
+- `config.yaml` 已加入 `.gitignore`；`.claude/`、`abc.history` 亦已忽略
 
-### 2.4 Sample testcase 執行進度（40 題）
+### 2.4 LLM fallback 全量評測
 
-> 判定：**完整** = 回應數 = prompt 行數 且 有 `testNN_out.v`
+> 以規則輸出為 golden，強制全部走 LLM（2026-06-18）
+
+- 全 40 題：**434/487 (89%) 命中**，mismatch=50，err=3
+- 剩餘分歧：工具近義選擇、gate 名 vs signal 名、transform 後計數 vs 確認訊息等
+- 結論：維持 **規則優先 + LLM fallback** 的 hybrid 設計
+
+### 2.5 PDF 規格合規（A_20260212.pdf）
+
+| 要求 | 狀態 |
+|------|------|
+| 執行檔 `cada1089_alpha -config <path>` | ✅ |
+| flat Verilog + 原語 + dff + bus + 常數 | ✅ |
+| stdin 逐行、`#RESPONSE/#END` 格式 | ✅ |
+| LLM config（gpt-4o-mini / claude-haiku-4-5） | ✅ |
+| Tool Spec 注入 system prompt | ✅ |
+| 基本 ≤60s / 其他 ≤300s | ⚠️ 多數遠低於上限；test39 ~105s |
+
+### 2.6 Sample testcase 執行進度（40 題）
+
+> 判定：**完整** = 回應數 = prompt 行數 且 有 `testNN_out.v`  
+> 最近一次完整批次：2026-06-18，總耗時約 6.5 分鐘
 
 | 狀態 | 數量 | Testcase |
 |------|------|----------|
-| ✅ 完整 | **39** | test01–test38、test40 |
-| ⚠️ 未完成 | **1** | test39（11/20 則回應，無 `test39_out.v`） |
+| ✅ 完整 | **40** | test01–test40 |
+| ⚠️ 未完成 | **0** | — |
 
-**test12 備註**：netlist 極大（約 **91,583 gates**），單次解析約 **165 秒**；完整跑完需數小時級時間，目前已有 log 與 out.v，但回應數可能與 prompt 行數不一致（曾多次重跑累積）。
+**最慢題目**：test39（~105s）、test12（~48s）、test35（~48s）、test34（~47s）、test37（~31s）。
+
+**test12 備註**：netlist 極大（約 **91,583 gates**）；C++ 加速後約 48s 完成 11/11。
+
+### 2.7 VM 部署（alpha_test_submission）
+
+| 項目 | 狀態 |
+|------|------|
+| rsync 至 VM `alpha_test_submission/` | ✅ |
+| uv standalone Python 3.12.13 + 專案 `.venv` | ✅ |
+| 依賴安裝（pyyaml / openai / anthropic / pybind11） | ✅ |
+| C++ `eda_core*.so` 編譯（可移植 `-O3`） | ✅ |
+| 執行時 `import eda_core`（CPP_OK） | ✅ |
+| test01 煙霧測試 | ✅ |
+
+### 2.8 課程期末繳交（Final Project）
+
+| 項目 | 狀態 | 備註 |
+|------|------|------|
+| `README.md`（繳交目錄說明 + 重現步驟） | ✅ | 2026-06-21 更新 |
+| `docs/report.tex`（IEEE 格式英文報告） | ✅ | 作者已填入；需 compile 成 PDF |
+| `docs/final_project_submission_guidelines.pdf` | ✅ | 繳交規範已對照 |
+| Presentation slides | ⬜ | 需放入 ZIP（B 項） |
+| ZIP 打包（`B12901032_B12901043.zip`） | ⬜ | 截止 2026-06-26 23:59 |
 
 ---
 
@@ -80,7 +130,7 @@
 | test09 | 8 | 8 | ✅ | 完整 |
 | test10 | 9 | 9 | ✅ | 完整 |
 | test11 | 10 | 10 | ✅ | 完整 |
-| test12 | 17* | 11 | ✅ | 超大電路，耗時極長 |
+| test12 | 11 | 11 | ✅ | 完整（超大電路，~48s） |
 | test13 | 12 | 12 | ✅ | 完整 |
 | test14 | 13 | 13 | ✅ | 完整 |
 | test15 | 14 | 14 | ✅ | 完整 |
@@ -107,48 +157,47 @@
 | test36 | 20 | 20 | ✅ | 完整 |
 | test37 | 20 | 20 | ✅ | 完整 |
 | test38 | 20 | 20 | ✅ | 完整 |
-| test39 | 11 | 20 | ❌ | **待補跑** |
+| test39 | 20 | 20 | ✅ | 完整（最慢，~105s） |
 | test40 | 20 | 20 | ✅ | 完整 |
-
-\* test12 回應數 > prompt 行數：可能為多次批次重跑所致，需人工核對 log 是否連續 id 1–11。
 
 ---
 
 ## 四、待解決問題
 
-### 🔴 高優先
+### 🔴 高優先（期末繳交）
 
-| # | 問題 | 影響 | 建議方向 |
-|---|------|------|----------|
-| 1 | **test39 未完成**（11/20，無 out.v） | 40 題中缺 1 題完整輸出 | 單獨重跑：`cat testcase/test39/prompt.txt \| ./cada0001_alpha -config config.yaml` |
-| 2 | **超大 netlist 效能**（test12：91k gates，解析 ~165s） | 逾時、批次中斷 | 優化 parser；或快取已解析 DAG；大電路分析走快速路徑 |
-| 3 | **答案正確性未對標官方** | 有跑完 ≠ 有得分 | 需對照評測腳本 / golden answer（若公布）做 regression |
+| # | 問題 | 建議方向 |
+|---|------|----------|
+| 1 | **report.tex → PDF** | Overleaf 或本地 TeX 編譯 |
+| 2 | **簡報 slides 更新** | 放入 ZIP 的 B 項 |
+| 3 | **ZIP 打包** | 依 `B12901032_B12901043.zip` 命名，<10 MB |
 
-### 🟡 中優先
+### 🟡 中優先（競賽 / 品質）
 
-| # | 問題 | 影響 | 建議方向 |
-|---|------|------|----------|
-| 4 | 批次 **300s timeout** 對大題不夠 | test12/14/33 等曾 `exit 124` | 腳本已改 600s；大題可單獨跑、不設 timeout |
-| 5 | **路徑完整枚舉** 在大電路上不可行 | Contest 若要求列舉所有 path 可能答錯 | 已對 >15k gates 改為「存在性 + 說明跳過枚舉」；需確認評測是否接受 |
-| 6 | **規則匹配覆蓋率** | 未匹配時才呼叫 LLM | 補齊 `handler.py` 規則；或強化 Tool Spec + LLM 規劃 |
-| 7 | **變換品質**（depth/fanout 優化） | 可能未達最優 cost | 加強 `optimize_cone_depth`、AIG/ABC 等（若允許） |
+| # | 問題 | 建議方向 |
+|---|------|----------|
+| 4 | **答案正確性未對標官方 golden** | 有跑完 ≠ 有得分；若公布 golden 做 regression |
+| 5 | **變換品質 / 優化 cost** | 評分看 cost ratio；可考慮 ABC 整合到 transform 路徑 |
+| 6 | **規則 / LLM 剩餘 11% 分歧** | 持續補 `handler.py` 規則或強化 Tool Spec |
+| 7 | **超大 netlist**（test12） | 已靠 C++ 改善；可再加 parser 快取 |
 
 ### 🟢 低優先 / 維護
 
 | # | 問題 | 建議方向 |
 |---|------|----------|
-| 8 | `batch_status.csv` 可能過期 | 以 `output/testNN/` 實際檔案為準 |
-| 9 | Verilog writer 與原始格式不完全一致 | 評測若只檢查功能可接受；否則改 writer 貼近 benchmark 風格 |
-| 10 | API key 安全 | 勿 commit `config.yaml`；曾外洩需 rotate |
+| 8 | Verilog writer 與 benchmark 格式不完全一致 | 評測若只檢功能可接受 |
+| 9 | ABC bridge 尚未接入主 transform 路徑 | 需要時在 `transform.py` 呼叫 |
+| 10 | API key 安全 | 勿 commit `config.yaml` |
 
 ---
 
 ## 五、已知技術限制
 
 1. **組合邏輯 DAG**：DFF Q 視為額外 PI，不處理時序等價。  
-2. **功能等價**：窮舉 PI（≤18 bit），更大則隨機抽樣 512 組。  
+2. **功能等價**：窮舉 PI（≤18–20 bit），更大則隨機抽樣。  
 3. **路徑枚舉**：上限 50 條 / 50k 步；超大電路改 BFS 存在性回答。  
-4. **變換驗證**：與變換前 snapshot 比等價，非與「最初載入」比（除非呼叫 `verify_equivalence` 工具）。  
+4. **變換驗證**：與變換前 snapshot 比等價；與「最初載入」比需呼叫 `verify_equivalence`。  
+5. **VM 依賴**：C++ 加速需 uv 管理的 Python 3.12 + 編譯出的 `.so`；純 Python fallback 仍可用。
 
 ---
 
@@ -159,19 +208,26 @@ cd cadcontest
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp config.example.yaml config.yaml   # 填入 api_key
+chmod +x cada1089_alpha
 
-# 單題（建議先 test01）
-cat testcase/test01/prompt.txt | ./cada0001_alpha -config config.yaml
-
-# 不呼叫 LLM
-export CADCONTEST_NO_LLM=1
-cat testcase/test01/prompt.txt | ./cada0001_alpha -config config.yaml
+# 單題
+cat testcase/test01/prompt.txt | ./cada1089_alpha -config config.yaml
 
 # 批次 40 題
 ./scripts/run_all_tests.sh config.yaml
+
+# LLM fallback 評測（全 40 題）
+python scripts/llm_fallback_eval.py 01-40
+
+# VM 部署（本機終端，需輸入跳板 + VM 密碼）
+MODE=uv DELETE=1 scripts/deploy_to_vm.sh
 ```
 
-**config.yaml `api_key`**：一般 **不必** 加引號；含特殊字元時用雙引號 `"..."`。
+### Token 用量
+
+- `output/token_usage.csv`：逐筆 LLM 呼叫紀錄  
+- `output/token_usage.csv.summary.json`：累計摘要  
+- 環境變數 `CADCONTEST_TOKEN_LOG` 可自訂 CSV 路徑
 
 ---
 
@@ -179,32 +235,41 @@ cat testcase/test01/prompt.txt | ./cada0001_alpha -config config.yaml
 
 ```
 cadcontest/
-├── cada0001_alpha          # 入口
+├── cada1089_alpha          # 入口（優先 .venv，否則 newest Python ≥3.7）
 ├── config.yaml             # LLM 設定（gitignore）
+├── setup.py                # C++ extension build
+├── cpp/eda_core/           # pybind11 加速
 ├── python/
 │   ├── main.py
 │   ├── eda/                # 後端
-│   └── agent/              # 前端
-├── testcase/test01..40/    # 輸入
-├── output/testNN/          # 輸出 log + *_out.v
-├── docs/                   # 競賽 PDF + 本文件
-└── scripts/                # 批次腳本
+│   └── agent/              # 前端（含 usage_log.py）
+├── testcase/test01..40/
+├── output/testNN/          # log + *_out.v
+├── docs/
+│   ├── report.tex          # 期末報告（IEEE）
+│   ├── DEPLOY.md
+│   ├── PROGRESS.md         # 本文件
+│   └── *.pdf               # 競賽 / 繳交規範
+└── scripts/                # 批次、部署、LLM eval
 ```
 
 ---
 
 ## 八、下一步建議（優先順序）
 
-1. [ ] 補跑 **test39** 至 20/20 並產生 `test39_out.v`  
-2. [ ] 抽樣核對 test21（fanout≤4）、test30（depth 優化）等變換題的 **功能等價**  
-3. [ ] 針對 test12 做 **parser / 載入快取** 優化  
-4. [ ] 整理尚未被規則覆蓋的 prompt 句式，擴充 `handler.py`  
-5. [ ] 準備 alpha 提交：Docker / 依賴清單 / README 給評測方  
+1. [ ] 將 `docs/report.tex` 編譯為 PDF（C 項）  
+2. [ ] 更新並放入 presentation slides（B 項）  
+3. [ ] 打包 `B12901032_B12901043.zip`（A–E 五項齊全）  
+4. [ ] 確認 Individual Contributions 段落與實際分工一致  
+5. [ ] （選做）抽樣核對變換題功能等價；優化 cost 以提升競賽分數  
 
 ---
 
 ## 九、參考文件
 
-- `docs/A_20260212.pdf` — 競賽說明  
-- `docs/Problem A_QA_0417.pdf` — Q&A  
+- `docs/A_20260212.pdf` — ICCAD 2026 Problem A 競賽說明  
+- `docs/final_project_submission_guidelines.pdf` — 課程期末繳交規範  
+- `docs/report.tex` — 專案報告（IEEE LaTeX）  
+- `docs/DEPLOY.md` — VM 部署說明  
+- `README.md` — 繳交用目錄與重現步驟  
 - `testcase/README.md` — sample 說明  

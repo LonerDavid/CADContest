@@ -64,6 +64,39 @@ chmod +x cada1089_alpha
 The launcher prefers a project-local `.venv`; otherwise it selects the newest
 available Python ≥ 3.7.
 
+### Configuring `config.yaml`
+
+`config.yaml` selects the cloud LLM provider used when a request does not match
+the deterministic rule engine. Start from the checked-in template:
+
+```bash
+cp config.example.yaml config.yaml
+```
+
+For OpenAI, keep `provider: "openai"` and set `openai.api_key`:
+
+```yaml
+provider: "openai"
+
+openai:
+  api_key: "YOUR_OPENAI_API_KEY"
+  model: "gpt-4o-mini"
+
+anthropic:
+  api_key: "YOUR_ANTHROPIC_API_KEY"
+  model: "claude-haiku-4-5"
+
+generation:
+  temperature: 0.2
+  max_output_tokens: 4096
+```
+
+For Anthropic, change the first line to `provider: "anthropic"` and set
+`anthropic.api_key`. The inactive provider block may remain in the file. Quote
+API keys if they contain special characters. `config.yaml` is gitignored and
+must not be committed; for course evaluation, the evaluator can provide its own
+config file and pass it with `./cada1089_alpha -config <path>`.
+
 ---
 
 ## D. Running

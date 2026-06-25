@@ -94,7 +94,7 @@ quantify, request by request, how much the deterministic layer contributes.
 \section{Background and Related Work}
 LLMs are increasingly applied to code, script, and configuration synthesis,
 and a growing body of work explores their use in hardware design and
-verification~\cite{xu2024llm}. The general tool-use paradigm---teaching a model
+verification~\cite{chateda}. The general tool-use paradigm---teaching a model
 to call external functions and act on their results---is exemplified by
 Toolformer~\cite{toolformer} and the ReAct reasoning-acting
 loop~\cite{react}. However, program-synthesis-style generation is risky in
@@ -105,7 +105,7 @@ multi-turn design state or integrate formal verification into the loop.
 
 These observations motivate constraint-aware agents that describe tools in
 terms of preconditions and effects and call verification tools to validate
-intermediate results~\cite{wu2024safe}. Our design embraces this view: the
+intermediate results~\cite{agentspec}. Our design embraces this view: the
 agent never edits the netlist directly; it selects a single, well-specified
 EDA operation whose effect is checked by an equivalence-verifying back-end. The
 deterministic rule layer further reduces reliance on the LLM for the common
@@ -246,9 +246,9 @@ extension is optional: a guarded \texttt{import} sets a capability flag, and if
 the module is absent the engine transparently uses the equivalent pure-Python
 implementation, so results are identical with or without the accelerator. We
 also integrated a bridge to the Berkeley ABC logic-synthesis tool for heavy
-optimization and combinational equivalence checking; the bridge auto-installs
-ABC on first use but is not on the default execution path in the current
-submission.
+optimization and combinational equivalence checking~\cite{abc}; the bridge
+auto-installs ABC on first use but is not on the default execution path in the
+current submission.
 
 \section{Evaluation}
 \subsection{Setup}
@@ -334,7 +334,7 @@ deterministic layer closes.
 
 \section*{Generative AI Usage Disclosure}
 In accordance with the course policy, we disclose that generative AI tools were
-used during development. The Cursor IDE with Anthropic Claude models was used as
+used during development. The Cursor IDE~\cite{cursor} with Anthropic Claude models was used as
 a pair-programming assistant to help implement and refactor portions of the
 back-end and agent code, to write the deployment tooling, and to draft and edit
 this report; all AI-generated content was reviewed, tested, and edited by the
@@ -363,11 +363,17 @@ Cadence Design Systems, Inc., 2026.
 teach themselves to use tools,'' arXiv:2302.04761, 2023.
 \bibitem{react} S. Yao \emph{et al.}, ``ReAct: Synergizing reasoning and acting
 in language models,'' arXiv:2210.03629, 2022.
-\bibitem{xu2024llm} H. Xu, L. Zhang, J. Li, and K. Hu, ``Large language models
-for hardware design: Opportunities and challenges,'' in \emph{Proc. 61st Design
-Automation Conf. (DAC)}, 2024.
-\bibitem{wu2024safe} T. Wu, X. Li, S. Wang, and Y. Chen, ``Safe and reliable AI
-agents with formal constraints,'' arXiv:2401.12345, 2024.
+\bibitem{chateda} Z. He, H. Wu, X. Zhang, X. Yao, S. Zheng, H. Zheng, and B.
+Yu, ``ChatEDA: A large language model powered autonomous agent for EDA,''
+\emph{IEEE Trans. Computer-Aided Design of Integrated Circuits and Systems},
+vol.~43, no.~10, pp.~3184--3197, 2024.
+\bibitem{agentspec} H. Wang, C. M. Poskitt, and J. Sun, ``AgentSpec:
+Customizable runtime enforcement for safe and reliable LLM agents,''
+arXiv:2503.18666, 2025.
+\bibitem{cursor} Anysphere, ``Cursor: AI coding agent,''
+\url{https://cursor.com}.
+\bibitem{abc} Berkeley ABC, ``ABC: System for sequential logic synthesis and
+formal verification,'' \url{https://github.com/berkeley-abc/abc}.
 \end{thebibliography}
 
 \end{document}

@@ -11,9 +11,6 @@ mkdir -p "$OUT_DIR"
 rm -rf "${OUT_DIR}"/test[0-9]* "${OUT_DIR}"/test[0-9][0-9]*
 touch "${OUT_DIR}/.gitkeep"
 
-# Rule-based agent only (no LLM API calls during batch)
-export CADCONTEST_NO_LLM=1
-
 passed=0
 failed=0
 errors=0

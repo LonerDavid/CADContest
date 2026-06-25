@@ -1,8 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PYTHON="${DIR}/.venv/bin/python"
-if [[ ! -x "${PYTHON}" ]]; then
-  PYTHON="python3"
+
+# 1) Prefer a project-local virtualenv if present.
+if [[ -x "${DIR}/.venv/bin/python" ]]; then
+  PY="${DIR}/.venv/bin/python"
+else
+  # 2) Otherwise pick the newest available Python >= 3.7 (code needs >=3.7:
+  #    dataclasses + `from __future__ import annotations`). The system python3
+  #    on some contest VMs is 3.6, which cannot run this project.
+  PY=""
+  for c in python3.13 python3.12 python3.11 python3.10 python3.9 python3.8 python3.7 python3; do
+    if command -v "$c" >/dev/null 2>&1; then
+      if "$c" -c 'import sys; sys.exit(0 if sys.version_info[:2] >= (3, 7) else 1)' 2>/dev/null; then
+        PY="$c"
+        break
+      fi
+    fi
+  done
+  if [[ -z "${PY}" ]]; then
+    echo "ERROR: no Python >= 3.7 found (system python3 is too old for this project)." >&2
+    echo "       Create a venv with a newer Python, e.g.: python3.x -m venv ${DIR}/.venv" >&2
+    exit 1
+  fi
 fi
-exec "${PYTHON}" "${DIR}/python/main.py" "$@"
+
+exec "${PY}" "${DIR}/python/main.py" "$@"

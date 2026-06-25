@@ -6,7 +6,6 @@ cd "$ROOT"
 START=${1:-1}
 END=${2:-40}
 CONFIG="${3:-config.yaml}"
-export CADCONTEST_NO_LLM=1
 BIN="./cada1089_alpha"
 OUT_DIR="${ROOT}/output"
 
